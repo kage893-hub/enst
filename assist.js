@@ -723,7 +723,10 @@ async function toJpeg(file) {
   canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
   bitmap.close?.();
   const url = canvas.toDataURL('image/jpeg', 0.9);
-  return { name: file.name, mediaType: 'image/jpeg', data: url.split(',')[1], url, width: canvas.width, height: canvas.height };
+  return {
+    name: file.name, mediaType: 'image/jpeg', data: url.split(',')[1], url, width: canvas.width, height: canvas.height,
+    original: URL.createObjectURL(file), // 決まった位置の数字は、縮小前の元画像から読む
+  };
 }
 
 async function addFiles(fileList) {
@@ -806,6 +809,121 @@ async function getWorker() {
     logger: (m) => ocrProgress(m),
   });
   return tesseractWorker;
+}
+
+// ---- 画面の決まった位置から数字を読む（イベント画面用） ----
+// 基準にしたスクショ（2000×900）上の位置。ゲームの画面は高さに合わせて拡大縮小され、
+// 左側のUIは左端、右側のUIは右端に寄るので、端末の横幅が違ってもこの基準で位置を計算できる。
+const SCREEN_LAYOUTS = [
+  {
+    name: 'イベント画面',
+    base: { w: 2000, h: 900 },
+    regions: [
+      // 右下「累計イベントpt」の数字（白地に黒文字）
+      { key: 'evepoint_now', anchor: 'right', x0: 1650, x1: 1850, y0: 568, y1: 622, ink: 'dark', suffix: 'pt' },
+      // 左下「イベント楽曲ライブ」ボタンのPASS枚数（オレンジ地に白文字）
+      { key: 'pass_now', anchor: 'left', x0: 300, x1: 440, y0: 788, y1: 842, ink: 'light' },
+    ],
+  },
+];
+
+let digitWorker = null;
+
+async function getDigitWorker() {
+  if (!window.Tesseract) await loadScript(TESSERACT_URL);
+  if (!digitWorker) {
+    digitWorker = await window.Tesseract.createWorker('eng', 1);
+    // 数字とカンマ・"pt" だけを、1行の文字として読む
+    await digitWorker.setParameters({ tessedit_char_whitelist: '0123456789,pt', tessedit_pageseg_mode: '7' });
+  }
+  return digitWorker;
+}
+
+function regionRect(layout, r, W, H) {
+  const s = H / layout.base.h;
+  const x = (v) => (r.anchor === 'right' ? W - (layout.base.w - v) * s : v * s);
+  return { x: x(r.x0), y: r.y0 * s, w: x(r.x1) - x(r.x0), h: (r.y1 - r.y0) * s };
+}
+
+// 切り出して拡大し、文字だけ黒・それ以外を白にする（level が上がるほど判定をゆるくする）
+function binarizeRegion(im, rect, ink, level) {
+  const k = Math.max(1, 160 / rect.h);
+  const c = document.createElement('canvas');
+  c.width = Math.round(rect.w * k);
+  c.height = Math.round(rect.h * k);
+  const ctx = c.getContext('2d');
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(im, rect.x, rect.y, rect.w, rect.h, 0, 0, c.width, c.height);
+  const d = ctx.getImageData(0, 0, c.width, c.height);
+  const p = d.data;
+  const [minLight, maxSat, maxDark] = [[200, 40, 110], [175, 70, 130], [150, 100, 150]][level];
+  for (let i = 0; i < p.length; i += 4) {
+    const mx = Math.max(p[i], p[i + 1], p[i + 2]);
+    const mn = Math.min(p[i], p[i + 1], p[i + 2]);
+    const isInk = ink === 'dark' ? mx < maxDark : mn > minLight && mx - mn < maxSat;
+    p[i] = p[i + 1] = p[i + 2] = isInk ? 0 : 255;
+  }
+  ctx.putImageData(d, 0, 0);
+  // 周りに白い余白をつける（文字が端に接していると読みにくい）
+  const out = document.createElement('canvas');
+  out.width = c.width + 40;
+  out.height = c.height + 40;
+  const o = out.getContext('2d');
+  o.fillStyle = '#fff';
+  o.fillRect(0, 0, out.width, out.height);
+  o.drawImage(c, 20, 20);
+  return out;
+}
+
+async function readRegion(worker, im, rect, r) {
+  let best = null;
+  for (let level = 0; level < 3; level++) {
+    const { data } = await worker.recognize(binarizeRegion(im, rect, r.ink, level));
+    const text = data.text.replace(/\s/g, '');
+    const m = text.match(/^(\d{1,3}(?:,?\d{3})*)(pt)?$/);
+    const cand = { value: m ? Number(m[1].replace(/,/g, '')) : null, text, conf: data.confidence };
+    if (r.suffix && m && !m[2]) cand.conf -= 30; // "pt" が付いていない＝別の画面の可能性
+    if (cand.value !== null && (!best || best.value === null || cand.conf > best.conf)) best = cand;
+    if (cand.value !== null && cand.conf >= 80) break;
+  }
+  return best;
+}
+
+function loadImage(src) {
+  return new Promise((resolve, reject) => {
+    const im = new Image();
+    im.onload = () => resolve(im);
+    im.onerror = reject;
+    im.src = src;
+  });
+}
+
+// 決まった画面だと分かれば、その位置の数字を返す（分からなければ null）
+async function readByLayout(img) {
+  const im = await loadImage(img.original || img.url);
+  const W = im.naturalWidth;
+  const H = im.naturalHeight;
+  if (W < H * 1.6) return null; // ゲーム画面は横長
+  const worker = await getDigitWorker();
+  for (const layout of SCREEN_LAYOUTS) {
+    const nums = [];
+    for (const r of layout.regions) {
+      const rect = regionRect(layout, r, W, H);
+      const hit = await readRegion(worker, im, rect, r);
+      if (!hit || hit.conf < 40) continue;
+      const f = img.width / W; // 表示用の縮小画像の座標に直す
+      nums.push({
+        key: r.key,
+        value: hit.value,
+        text: hit.text.replace(/pt$/, ''),
+        pct: false,
+        bbox: { x0: rect.x * f, y0: rect.y * f, x1: (rect.x + rect.w) * f, y1: (rect.y + rect.h) * f },
+      });
+    }
+    // 「累計イベントpt」が読めたらこの画面とみなす
+    if (nums.some((n) => n.key === 'evepoint_now')) return { layout, nums };
+  }
+  return null;
 }
 
 // 文字を読みやすくするため、グレースケール＋コントラスト強調した画像を作る
@@ -911,12 +1029,32 @@ async function readLocally() {
     }
   };
   try {
-    const worker = await getWorker();
     const results = [];
     const autoFilled = new Set();
     for (current = 0; current < images.length; current++) {
       const img = images[current];
+
+      // イベント画面なら、決まった位置の数字を数字専用の読み方で読む（速くて正確）
+      setStatus(`画面の種類を確認中… ${current + 1}/${images.length}枚目`, 'busy');
+      const known = await readByLayout(img).catch((e) => { console.warn(e); return null; });
+      if (known) {
+        if (mode !== 'now' && isEventTerm()) {
+          mode = 'now';
+          applyMode();
+          toast('イベント画面なので「今のイベント」に切り替えました');
+        }
+        known.nums.forEach((n) => {
+          if (mode === 'now' && assign(n.key, n.value)) {
+            n.assigned = n.key;
+            autoFilled.add(n.key);
+          }
+        });
+        results.push({ img, nums: known.nums });
+        continue;
+      }
+
       const { canvas, scale } = await preprocess(img);
+      const worker = await getWorker();
       const { data } = await worker.recognize(canvas);
       const lines = (data.lines || []).map((l) => ({ text: l.text, nums: numbersInLine(l, scale) }));
       autoAssign(lines).forEach((k) => autoFilled.add(k));
@@ -925,7 +1063,7 @@ async function readLocally() {
     renderOcrResults(results);
     onChange();
     const count = results.reduce((s, r) => s + r.nums.length, 0);
-    const auto = [...autoFilled].map((k) => LABELS[k]).join('・');
+    const auto = [...autoFilled].map((k) => `${LABELS[k]} ${Number($(k).value).toLocaleString('ja-JP')}`).join('・');
     setStatus(count
       ? `${auto ? `自動で入れました：${auto}\n` : ''}画像の上の数字をタップすると、どの項目か選んで入力できます。`
       : '数字が見つかりませんでした。数字がはっきり写ったスクショで試すか、設定で「Claude API」を選んでください。',
@@ -957,6 +1095,7 @@ function renderOcrResults(results) {
       b.style.width = `${((n.bbox.x1 - n.bbox.x0) / img.width) * 100}%`;
       b.style.height = `${((n.bbox.y1 - n.bbox.y0) / img.height) * 100}%`;
       b.setAttribute('aria-label', `${n.text} を入力する`);
+      if (n.bbox.x0 > img.width / 2) b.classList.add('right'); // ラベルが画面からはみ出さないように
       if (n.assigned) markAssigned(b, n.assigned);
       b.addEventListener('click', () => openSheet(n, b));
       wrap.appendChild(b);
@@ -1222,6 +1361,7 @@ function init() {
   });
   $('readBtn').addEventListener('click', readImages);
   $('clearImgBtn').addEventListener('click', () => {
+    images.forEach((img) => img.original && URL.revokeObjectURL(img.original));
     images = [];
     renderThumbs();
     $('ocrResults').innerHTML = '';
