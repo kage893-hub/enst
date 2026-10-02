@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>あんスタMusic イベント計算機</title>
+  <meta name="description" content="あんスタ!!Music のイベントで目標ptまでに必要な曲数・BP・ダイヤを計算します。">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="site-header">
+    <h1>あんスタ!!Music イベント計算機</h1>
+    <p class="lead">目標ptまでの残り曲数・必要BP・必要ダイヤを計算します。入力内容はこの端末に自動保存されます。</p>
+  </header>
+
+  <main>
+    <section class="card">
+      <h2>イベント情報</h2>
+      <div class="grid">
+        <label>イベント終了日時
+          <input type="datetime-local" id="endAt">
+        </label>
+        <label>現在日時
+          <span class="row">
+            <input type="datetime-local" id="nowAt">
+            <button type="button" id="nowBtn" class="small">今</button>
+          </span>
+        </label>
+      </div>
+      <p class="hint" id="remainText"></p>
+    </section>
+
+    <section class="card">
+      <h2>ポイント</h2>
+      <div class="grid">
+        <label>目標pt
+          <input type="number" id="targetPt" min="0" step="1" inputmode="numeric">
+        </label>
+        <label>現在pt
+          <input type="number" id="currentPt" min="0" step="1" inputmode="numeric">
+        </label>
+        <label>1曲あたりの獲得pt
+          <input type="number" id="ptPerSong" min="1" step="1" inputmode="numeric">
+          <small>下で選んだ消費BPでプレイしたときの実測値</small>
+        </label>
+        <label>1曲の消費BP
+          <select id="bpPerSong"></select>
+        </label>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>BP・ダイヤ</h2>
+      <div class="grid">
+        <label>現在のBP
+          <input type="number" id="currentBp" min="0" step="1" inputmode="numeric">
+        </label>
+        <label>所持ダイヤ
+          <input type="number" id="ownedDia" min="0" step="1" inputmode="numeric">
+        </label>
+        <label>その他のBP回復見込み
+          <input type="number" id="extraBp" min="0" step="1" inputmode="numeric">
+          <small>レベルアップ・回復アイテムなど（BP換算）</small>
+        </label>
+        <label>1日の放置時間（睡眠など）
+          <input type="number" id="idleHours" min="0" max="24" step="0.5" inputmode="decimal">
+          <small>BPが上限に達して回復が止まる時間の計算に使用</small>
+        </label>
+      </div>
+
+      <details class="settings">
+        <summary>ゲーム仕様の設定（仕様変更時に変更）</summary>
+        <div class="grid">
+          <label>BP上限
+            <input type="number" id="bpMax" min="1" step="1">
+          </label>
+          <label>BP 1回復にかかる時間（分）
+            <input type="number" id="bpRecoverMin" min="1" step="1">
+          </label>
+          <label>ダイヤ回復1回のダイヤ数
+            <input type="number" id="diaPerRefill" min="1" step="1">
+          </label>
+          <label>ダイヤ回復1回で回復するBP
+            <input type="number" id="bpPerRefill" min="1" step="1">
+          </label>
+          <label>1曲あたりの所要時間（分）
+            <input type="number" id="minPerSong" min="0.5" step="0.5">
+            <small>ロード・リザルト込みの目安</small>
+          </label>
+        </div>
+        <button type="button" id="resetSpec" class="small ghost">仕様を初期値に戻す</button>
+      </details>
+    </section>
+
+    <section class="card result" aria-live="polite">
+      <h2>計算結果</h2>
+      <div id="result"></div>
+    </section>
+
+    <section class="card">
+      <h2>消費BP別の比較</h2>
+      <p class="hint">1曲あたりの獲得ptは消費BPに比例するとして換算しています。</p>
+      <div class="table-wrap">
+        <table id="compare">
+          <thead>
+            <tr><th>消費BP</th><th>1曲pt</th><th>残り曲数</th><th>必要ダイヤ</th><th>プレイ時間</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <div class="actions">
+      <button type="button" id="clearAll" class="ghost">入力をすべてリセット</button>
+    </div>
+  </main>
+
+  <footer class="site-footer">
+    <p>非公式のファンメイドツールです。数値は目安であり、ゲーム内仕様の変更により実際と異なる場合があります。</p>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
