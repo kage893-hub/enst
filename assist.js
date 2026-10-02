@@ -1,15 +1,16 @@
 // enst-lab 入力アシスト
 // 入力内容を enst-lab のイベントダイヤ計算機（ユニット新曲イベント用）へ POST して結果ページを開く。
-// 画像からの読み取りは Claude API（ブラウザから直接呼び出し）で行う。
+// 画像読み取りは「端末内OCR（Tesseract.js・無料）」が標準。Claude API は任意で使える高精度モード。
 
 const ENST_ACTION = 'https://enst-lab.com/event_result.php';
 // event.php 側の `event_new_next` が false のとき 'sp' が送られる（2026/10 時点）
 const ENST_EVENT_FLG = 'sp';
 
 const STORAGE_KEY = 'enst-assist-v1';
+const PREFS_KEY = 'enst-assist-prefs';
 const API_KEY_KEY = 'enst-assist-apikey';
-const MODEL_KEY = 'enst-assist-model';
 const SDK_URL = 'https://cdn.jsdelivr.net/npm/@anthropic-ai/sdk/+esm';
+const TESSERACT_URL = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
 
 // enst-lab の初期値に合わせる
 const DEFAULTS = {
@@ -35,7 +36,22 @@ const DEFAULTS = {
 const FIELDS = Object.keys(DEFAULTS);
 const PROGRESS_FIELDS = ['evepoint_now', 'pass_now', 'whistle', 'megaphone'];
 
-const RANGES = { now_bp: [0, 20], now_ticket: [0, 24], lost_bp: [0, 30] };
+const RANGES = { now_bp: [0, 20], now_ticket: [0, 24], lost_bp: [0, 30], megaphone: [0, 3] };
+
+const LABELS = {
+  goal_point: '目標（万pt）',
+  evepoint_now: '現在イベントpt',
+  pass_now: '所持PASS',
+  whistle: '所持ホイッスル',
+  megaphone: '所持メガホン',
+  now_bp: '現在BP',
+  now_ticket: 'お仕事チケット',
+  bonus_nomal: '通常曲 特効%',
+  bonus_event: 'イベ曲 特効%',
+  nomal_score: '通常曲スコア',
+  event_score: 'イベ曲スコア',
+  user_rank: 'RANK',
+};
 
 const OFFICE_LEVELS = [
   ['lv1', 'Lv.1〈最大3枚・60分〉', 3],
@@ -54,6 +70,7 @@ const OFFICE_LEVELS = [
 ];
 
 const $ = (id) => document.getElementById(id);
+const haptic = () => navigator.vibrate?.(8);
 
 // ---- イベント期間（enst-lab の判定ロジックと同じ） ----
 // ユニット新曲イベントは 月末15:00〜8日21:59 / 15日15:00〜23日21:59
@@ -88,7 +105,8 @@ function eventKey(d = new Date()) {
 
 // ---- 状態 ----
 let mode = 'now'; // 'now' | 'start'
-let images = [];  // { name, mediaType, data(base64), url }
+let images = [];  // { name, mediaType, data(base64), url, width, height }
+let prefs = { tab: 'input', engine: 'local', model: 'claude-opus-5-5' };
 
 function storage(fn) {
   try { return fn(); } catch (_) { return null; }
@@ -118,23 +136,32 @@ function save() {
   storage(() => localStorage.setItem(STORAGE_KEY, JSON.stringify(data)));
 }
 
+function savePrefs() {
+  storage(() => localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)));
+}
+
 function load() {
   const saved = storage(() => JSON.parse(localStorage.getItem(STORAGE_KEY))) || {};
   const values = { ...DEFAULTS, ...(saved.values || {}) };
 
   // イベントが変わっていたら進捗系はリセット（目標や自分用設定は残す）
-  if (saved.eventKey && saved.eventKey !== eventKey()) {
-    PROGRESS_FIELDS.forEach((k) => { values[k] = DEFAULTS[k]; });
-    values.now_bp = DEFAULTS.now_bp;
-    values.now_ticket = String(ticketMax(values.office_LV));
-    values.whistle100 = DEFAULTS.whistle100;
-  }
+  if (saved.eventKey && saved.eventKey !== eventKey()) resetProgress(values);
   FIELDS.forEach((k) => setValue(k, values[k]));
 
   mode = isEventTerm() ? (saved.eventKey === eventKey() && saved.mode) || 'now' : 'start';
 
+  prefs = { ...prefs, ...(storage(() => JSON.parse(localStorage.getItem(PREFS_KEY))) || {}) };
   $('apiKey').value = storage(() => localStorage.getItem(API_KEY_KEY)) || '';
-  $('model').value = storage(() => localStorage.getItem(MODEL_KEY)) || 'claude-opus-5-5';
+  $('model').value = prefs.model;
+  $('engine').value = prefs.engine;
+}
+
+function resetProgress(values) {
+  PROGRESS_FIELDS.forEach((k) => { values[k] = DEFAULTS[k]; });
+  values.now_bp = DEFAULTS.now_bp;
+  values.now_ticket = String(ticketMax(values.office_LV));
+  values.whistle100 = DEFAULTS.whistle100;
+  return values;
 }
 
 function ticketMax(office) {
@@ -153,6 +180,7 @@ function buildChips() {
       b.textContent = labels[i];
       b.dataset.value = val;
       b.addEventListener('click', () => {
+        haptic();
         setValue(key, val);
         onChange();
       });
@@ -189,6 +217,7 @@ function clamp(key, n) {
 function bindSteppers() {
   document.querySelectorAll('[data-step]').forEach((b) => {
     b.addEventListener('click', () => {
+      haptic();
       const key = b.dataset.target;
       const cur = parseInt(normalizeNumber($(key).value), 10) || 0;
       setValue(key, String(clamp(key, cur + Number(b.dataset.step))));
@@ -197,9 +226,43 @@ function bindSteppers() {
   });
 }
 
+function toast(text, ms = 2600) {
+  const el = $('toast');
+  el.textContent = text;
+  el.classList.add('show');
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => el.classList.remove('show'), ms);
+}
+
+function flash(key) {
+  const field = $(key).closest('.field');
+  if (!field) return;
+  field.classList.remove('filled');
+  void field.offsetWidth; // アニメーションを再生し直す
+  field.classList.add('filled');
+}
+
+// ---- タブ ----
+function setTab(tab) {
+  prefs.tab = tab;
+  savePrefs();
+  document.querySelectorAll('.view').forEach((v) => v.classList.toggle('active', v.dataset.view === tab));
+  document.querySelectorAll('.tabbar button').forEach((b) => {
+    const on = b.dataset.tab === tab;
+    b.classList.toggle('on', on);
+    if (on) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
+  });
+  const showCta = tab === 'input';
+  $('cta').classList.toggle('hide', !showCta);
+  document.body.classList.toggle('has-cta', showCta);
+  window.scrollTo({ top: 0 });
+}
+
 function applyMode() {
   const term = isEventTerm();
-  document.querySelectorAll('.segmented button').forEach((b) => {
+  const seg = document.querySelector('.segmented');
+  seg.dataset.mode = mode;
+  seg.querySelectorAll('button').forEach((b) => {
     const on = b.dataset.mode === mode;
     b.classList.toggle('on', on);
     b.setAttribute('aria-checked', on);
@@ -208,14 +271,11 @@ function applyMode() {
   document.querySelectorAll('[data-show="now"]').forEach((el) => { el.hidden = mode !== 'now'; });
 
   // ログボホイッスルは「開始から」か、イベ初日のみ
-  const showWhistle = mode === 'start' || isEventFirstDay();
-  $('whistleCard').hidden = !showWhistle;
+  $('whistleCard').hidden = !(mode === 'start' || isEventFirstDay());
 
   $('bpLabel').textContent = mode === 'now' ? '現在残りBP' : 'イベ開始時BP';
   $('ticketLabel').textContent = mode === 'now' ? '残りお仕事チケット' : '開始時お仕事チケット';
-  $('termText').textContent = term
-    ? 'いまはイベント期間中です'
-    : 'いまはイベント期間外なので「イベント開始から」で計算します';
+  $('termText').textContent = term ? 'イベント開催中' : 'イベント期間外（開始からで計算）';
 }
 
 // ---- 入力チェック（enst-lab のフォーム制約に合わせる） ----
@@ -237,6 +297,12 @@ function validate(v) {
   }
   need('user_rank', v.user_rank === '' || (pos(v.user_rank) && v.user_rank.length <= 4), 'RANKは数字で入れてください');
   return errors;
+}
+
+// 進み具合リングに数える必須項目
+function requiredKeys() {
+  const keys = ['goal_point', 'bonus_nomal', 'bonus_event', 'nomal_score', 'event_score'];
+  return mode === 'now' ? [...keys, 'evepoint_now', 'pass_now'] : keys;
 }
 
 function buildPayload(v) {
@@ -269,14 +335,24 @@ function onChange() {
     if ($(k).value !== '') setValue(k, String(clamp(k, parseInt($(k).value, 10) || 0)));
   });
   applyMode();
-  updateDock();
+  updateStatus();
   save();
 }
 
-function updateDock() {
+function updateStatus() {
   const errors = validate(getValues());
   document.querySelectorAll('.field.error').forEach((el) => el.classList.remove('error'));
-  $('dockMsg').textContent = errors.length ? `あと ${errors.length} 項目：${errors[0][1]}` : '準備OK！';
+
+  const req = requiredKeys();
+  const bad = new Set(errors.map(([k]) => k));
+  const done = req.filter((k) => !bad.has(k)).length;
+  $('ringText').textContent = `${done}/${req.length}`;
+  $('ringMeter').style.strokeDashoffset = String(97.4 * (1 - done / req.length));
+  $('ring').classList.toggle('done', done === req.length);
+  $('ring').setAttribute('aria-label', `必須 ${req.length} 項目中 ${done} 項目入力済み`);
+  $('badge').textContent = errors.length ? String(errors.length) : '';
+
+  $('dockMsg').textContent = errors.length ? `あと ${errors.length} 項目 ・ ${errors[0][1]}` : '準備OK！';
   $('dockMsg').classList.toggle('ok', !errors.length);
 }
 
@@ -286,11 +362,15 @@ function submit() {
   if (errors.length) {
     errors.forEach(([key]) => $(key).closest('.field')?.classList.add('error'));
     const first = $(errors[0][0]);
-    first.closest('details')?.setAttribute('open', '');
+    const view = first.closest('.view');
+    if (view && !view.classList.contains('active')) setTab(view.dataset.view);
     first.closest('.field').scrollIntoView({ behavior: 'smooth', block: 'center' });
     if (first.type !== 'hidden') first.focus({ preventScroll: true });
+    navigator.vibrate?.([20, 40, 20]);
+    toast(errors[0][1]);
     return;
   }
+  haptic();
   const form = document.createElement('form');
   form.method = 'POST';
   form.action = ENST_ACTION;
@@ -307,6 +387,18 @@ function submit() {
   form.remove();
 }
 
+// 読み取った数値をフィールドに入れる（単位変換・範囲調整つき）
+function assign(key, n) {
+  if (n === null || n === undefined || !Number.isFinite(n) || n < 0) return false;
+  let v = Math.floor(n);
+  if (key === 'nomal_score' || key === 'event_score') v = v >= 10000 ? Math.floor(v / 10000) : v; // 万単位
+  if (key === 'goal_point') v = v >= 100000 ? Math.floor(v / 10000) : v; // 万単位
+  if (RANGES[key]) v = clamp(key, v);
+  setValue(key, String(v));
+  flash(key);
+  return true;
+}
+
 // ---- 画像 ----
 const MAX_EDGE = 1600;
 
@@ -319,7 +411,7 @@ async function toJpeg(file) {
   canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
   bitmap.close?.();
   const url = canvas.toDataURL('image/jpeg', 0.9);
-  return { name: file.name, mediaType: 'image/jpeg', data: url.split(',')[1], url };
+  return { name: file.name, mediaType: 'image/jpeg', data: url.split(',')[1], url, width: canvas.width, height: canvas.height };
 }
 
 async function addFiles(fileList) {
@@ -330,11 +422,12 @@ async function addFiles(fileList) {
     try {
       images.push(await toJpeg(f));
     } catch (_) {
-      setStatus(`${f.name} は読み込めませんでした`, 'warn');
+      toast(`${f.name} は読み込めませんでした`);
     }
   }
   renderThumbs();
-  setStatus(`${images.length}枚の画像があります。「読み取る」を押してください。`);
+  setStatus('');
+  toast(`${images.length}枚の画像があります`);
 }
 
 function renderThumbs() {
@@ -367,6 +460,241 @@ function setStatus(text, cls = '') {
   el.className = `status ${cls}`;
 }
 
+async function readImages() {
+  const btn = $('readBtn');
+  btn.disabled = true;
+  btn.classList.add('loading');
+  $('ocrResults').innerHTML = '';
+  try {
+    if (prefs.engine === 'claude') await readWithClaude();
+    else await readLocally();
+  } finally {
+    btn.classList.remove('loading');
+    btn.disabled = !images.length;
+  }
+}
+
+// ==== 端末内OCR（Tesseract.js・無料） ====
+let tesseractWorker = null;
+let ocrProgress = () => {};
+
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = src;
+    s.onload = resolve;
+    s.onerror = () => reject(new Error('読み取りエンジンを読み込めませんでした（通信を確認してください）'));
+    document.head.appendChild(s);
+  });
+}
+
+async function getWorker() {
+  if (!window.Tesseract) await loadScript(TESSERACT_URL);
+  tesseractWorker ??= await window.Tesseract.createWorker('jpn+eng', 1, {
+    logger: (m) => ocrProgress(m),
+  });
+  return tesseractWorker;
+}
+
+// 文字を読みやすくするため、グレースケール＋コントラスト強調した画像を作る
+function preprocess(img) {
+  return new Promise((resolve, reject) => {
+    const el = new Image();
+    el.onload = () => {
+      const scale = Math.max(1, 1400 / el.width);
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round(el.width * scale);
+      canvas.height = Math.round(el.height * scale);
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(el, 0, 0, canvas.width, canvas.height);
+      const d = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const p = d.data;
+      for (let i = 0; i < p.length; i += 4) {
+        const g = 0.299 * p[i] + 0.587 * p[i + 1] + 0.114 * p[i + 2];
+        const c = Math.max(0, Math.min(255, (g - 128) * 1.5 + 128));
+        p[i] = p[i + 1] = p[i + 2] = c;
+      }
+      ctx.putImageData(d, 0, 0);
+      resolve({ canvas, scale });
+    };
+    el.onerror = reject;
+    el.src = img.url;
+  });
+}
+
+const toHalf = (s) => s
+  .replace(/[０-９％／，．]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
+  .replace(/[oO](?=\d)|(?<=\d)[oO]/g, '0')
+  .replace(/(?<=\d)[lI|](?=\d)/g, '1');
+
+// 1行の単語から「数字のかたまり」を取り出す（"1," "234," "567" のように分かれていても1つにまとめる）
+function numbersInLine(line, scale) {
+  const out = [];
+  let cur = null;
+  const flush = () => {
+    if (!cur) return;
+    const digits = cur.text.replace(/[,.]/g, '');
+    const m = digits.match(/^(\d{1,9})(%?)$/);
+    if (m) out.push({ value: Number(m[1]), pct: !!m[2], text: cur.text, bbox: cur.bbox });
+    cur = null;
+  };
+  for (const w of line.words) {
+    const t = toHalf(w.text.trim());
+    const b = { x0: w.bbox.x0 / scale, y0: w.bbox.y0 / scale, x1: w.bbox.x1 / scale, y1: w.bbox.y1 / scale };
+    // "8/10" のような表示は左側だけ使う
+    const frac = t.match(/^(\d{1,3})\/(\d{1,3})$/);
+    if (frac) { flush(); out.push({ value: Number(frac[1]), pct: false, text: t, bbox: b }); continue; }
+    if (/^[\d,.]+%?$/.test(t)) {
+      const gap = cur ? b.x0 - cur.bbox.x1 : 0;
+      if (cur && gap < (b.y1 - b.y0) * 0.8 && !cur.text.endsWith('%')) {
+        cur.text += t;
+        cur.bbox = { x0: cur.bbox.x0, y0: Math.min(cur.bbox.y0, b.y0), x1: b.x1, y1: Math.max(cur.bbox.y1, b.y1) };
+      } else {
+        flush();
+        cur = { text: t, bbox: b };
+      }
+    } else {
+      flush();
+    }
+  }
+  flush();
+  return out;
+}
+
+// 項目名が近くにある数字だけ自動で入れる（迷うものは入れず、タップで選んでもらう）
+const AUTO_RULES = [
+  { key: 'pass_now', re: /PASS|パス/i, now: true },
+  { key: 'whistle', re: /ホイッスル/, now: true },
+  { key: 'megaphone', re: /メガホン/, now: true },
+  { key: 'evepoint_now', re: /イベント?(pt|ポイント)|累計/i, now: true, min: 100 },
+  { key: 'user_rank', re: /RANK|ランク/i },
+  { key: 'now_ticket', re: /チケット/ },
+];
+
+function autoAssign(lines) {
+  const done = new Set();
+  lines.forEach((line, i) => {
+    const text = toHalf(line.text.replace(/\s/g, ''));
+    for (const rule of AUTO_RULES) {
+      if (done.has(rule.key) || (rule.now && mode !== 'now') || !rule.re.test(text)) continue;
+      const pick = (nums) => nums.find((n) => !n.pct && n.value >= (rule.min || 0));
+      const hit = pick(line.nums) || pick(lines[i + 1]?.nums || []);
+      if (hit && assign(rule.key, hit.value)) {
+        done.add(rule.key);
+        hit.assigned = rule.key;
+      }
+    }
+  });
+  return [...done];
+}
+
+async function readLocally() {
+  setStatus('読み取りエンジンを準備中…（初回は少し時間がかかります）', 'busy');
+  let current = 0;
+  ocrProgress = (m) => {
+    if (m.status === 'recognizing text') {
+      setStatus(`読み取り中… ${current + 1}/${images.length}枚目 ${Math.round(m.progress * 100)}%`, 'busy');
+    }
+  };
+  try {
+    const worker = await getWorker();
+    const results = [];
+    const autoFilled = new Set();
+    for (current = 0; current < images.length; current++) {
+      const img = images[current];
+      const { canvas, scale } = await preprocess(img);
+      const { data } = await worker.recognize(canvas);
+      const lines = (data.lines || []).map((l) => ({ text: l.text, nums: numbersInLine(l, scale) }));
+      autoAssign(lines).forEach((k) => autoFilled.add(k));
+      results.push({ img, nums: lines.flatMap((l) => l.nums) });
+    }
+    renderOcrResults(results);
+    onChange();
+    const count = results.reduce((s, r) => s + r.nums.length, 0);
+    const auto = [...autoFilled].map((k) => LABELS[k]).join('・');
+    setStatus(count
+      ? `${auto ? `自動で入れました：${auto}\n` : ''}画像の上の数字をタップすると、どの項目か選んで入力できます。`
+      : '数字が見つかりませんでした。数字がはっきり写ったスクショで試すか、設定で「Claude API」を選んでください。',
+    count ? 'ok' : 'warn');
+  } catch (err) {
+    console.error(err);
+    setStatus(`読み取りに失敗しました：${err?.message || err}`, 'warn');
+  }
+}
+
+// 画像の上に、読み取った数字をタップできるボタンとして重ねる
+function renderOcrResults(results) {
+  const box = $('ocrResults');
+  box.innerHTML = '';
+  results.forEach(({ img, nums }) => {
+    if (!nums.length) return;
+    const wrap = document.createElement('div');
+    wrap.className = 'ocr-image';
+    const el = document.createElement('img');
+    el.src = img.url;
+    el.alt = img.name;
+    wrap.appendChild(el);
+    nums.forEach((n) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'ocr-num';
+      b.style.left = `${(n.bbox.x0 / img.width) * 100}%`;
+      b.style.top = `${(n.bbox.y0 / img.height) * 100}%`;
+      b.style.width = `${((n.bbox.x1 - n.bbox.x0) / img.width) * 100}%`;
+      b.style.height = `${((n.bbox.y1 - n.bbox.y0) / img.height) * 100}%`;
+      b.setAttribute('aria-label', `${n.text} を入力する`);
+      if (n.assigned) markAssigned(b, n.assigned);
+      b.addEventListener('click', () => openSheet(n, b));
+      wrap.appendChild(b);
+    });
+    box.appendChild(wrap);
+  });
+}
+
+function markAssigned(btn, key) {
+  btn.classList.add('assigned');
+  btn.dataset.label = LABELS[key];
+}
+
+// ---- 項目選択シート ----
+let sheetTarget = null;
+
+function openSheet(num, btn) {
+  haptic();
+  sheetTarget = { num, btn };
+  $('sheetValue').textContent = num.text;
+  const list = $('sheetList');
+  list.innerHTML = '';
+  Object.entries(LABELS).forEach(([key, label]) => {
+    if (PROGRESS_FIELDS.includes(key) && mode !== 'now') return;
+    if (num.pct && !key.startsWith('bonus')) return;
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'sheet-item';
+    b.innerHTML = `<span></span><b></b>`;
+    b.querySelector('span').textContent = label;
+    b.querySelector('b').textContent = $(key).value || '—';
+    b.addEventListener('click', () => {
+      if (assign(key, num.value)) {
+        markAssigned(btn, key);
+        onChange();
+        toast(`${label} に ${$(key).value} を入れました`);
+      }
+      closeSheet();
+    });
+    list.appendChild(b);
+  });
+  $('sheet').classList.add('open');
+  $('sheet').setAttribute('aria-hidden', 'false');
+}
+
+function closeSheet() {
+  $('sheet').classList.remove('open');
+  $('sheet').setAttribute('aria-hidden', 'true');
+  sheetTarget = null;
+}
+
+// ==== Claude API（任意・高精度） ====
 const NUM = (description) => ({ type: ['integer', 'null'], description });
 const EXTRACT_SCHEMA = {
   type: 'object',
@@ -405,17 +733,16 @@ function loadSdk() {
   return sdkPromise;
 }
 
-async function readImages() {
+async function readWithClaude() {
   const apiKey = $('apiKey').value.trim();
   if (!apiKey) {
-    $('apiCard').open = true;
+    setTab('settings');
     $('apiKey').focus();
-    setStatus('画像の読み取りには APIキーの設定が必要です（下の「画像読み取りの設定」）', 'warn');
+    toast('Claude API を使うには APIキーが必要です');
     return;
   }
-  const model = $('model').value;
-  $('readBtn').disabled = true;
-  setStatus('読み取り中…（10〜30秒ほどかかります）', 'busy');
+  const model = prefs.model;
+  setStatus('Claude が読み取り中…（10〜30秒ほど）', 'busy');
 
   try {
     const Anthropic = await loadSdk();
@@ -459,51 +786,20 @@ async function readImages() {
       : status === 429 ? '混み合っています。少し待ってからもう一度押してください'
       : err?.message || String(err);
     setStatus(`読み取りに失敗しました：${msg}`, 'warn');
-  } finally {
-    $('readBtn').disabled = !images.length;
   }
 }
 
-const LABELS = {
-  evepoint_now: '現在pt', pass_now: 'PASS', whistle: 'ホイッスル', megaphone: 'メガホン',
-  now_bp: 'BP', now_ticket: 'チケット', user_rank: 'RANK',
-  bonus_nomal: '通常曲特効', bonus_event: 'イベ曲特効', nomal_score: '通常曲スコア', event_score: 'イベ曲スコア',
-};
-
 function applyExtracted(r) {
-  const filled = [];
-  const put = (key, n) => {
-    if (n === null || n === undefined || !Number.isFinite(n) || n < 0) return;
-    setValue(key, String(Math.floor(n)));
-    const field = $(key).closest('.field');
-    field?.classList.remove('filled');
-    void field?.offsetWidth; // アニメーションを再生し直す
-    field?.classList.add('filled');
-    filled.push(LABELS[key]);
-  };
-
-  // スコアは「万」単位で入力する
-  const toMan = (n) => (n == null ? null : n >= 10000 ? Math.floor(n / 10000) : n);
-
-  if (mode === 'now') {
-    put('evepoint_now', r.evepoint_now);
-    put('pass_now', r.pass_now);
-    put('whistle', r.whistle);
-    put('megaphone', r.megaphone == null ? null : Math.min(3, r.megaphone));
-  }
-  put('now_bp', r.now_bp == null ? null : Math.min(20, r.now_bp));
-  put('now_ticket', r.now_ticket == null ? null : Math.min(24, r.now_ticket));
-  put('user_rank', r.user_rank);
-  put('bonus_nomal', r.bonus_nomal);
-  put('bonus_event', r.bonus_event);
-  put('nomal_score', toMan(r.nomal_score));
-  put('event_score', toMan(r.event_score));
+  const keys = ['now_bp', 'now_ticket', 'user_rank', 'bonus_nomal', 'bonus_event', 'nomal_score', 'event_score'];
+  if (mode === 'now') keys.unshift(...PROGRESS_FIELDS);
+  const filled = keys.filter((k) => assign(k, r[k])).map((k) => LABELS[k]);
 
   onChange();
   const note = r.notes ? `\nメモ：${r.notes}` : '';
   setStatus(filled.length
-    ? `入力しました：${filled.join('・')}。数字が合っているか確認してください。${note}`
+    ? `入力しました：${filled.join('・')}\n数字が合っているか「入力」タブで確認してください。${note}`
     : `入力できる数字が見つかりませんでした。${note}`, filled.length ? 'ok' : 'warn');
+  if (filled.length) toast(`${filled.length}項目を入力しました`);
 }
 
 // ---- 起動 ----
@@ -513,21 +809,38 @@ function init() {
   bindSteppers();
   load();
   applyMode();
-  updateDock();
+  updateStatus();
+  setTab(prefs.tab);
 
+  document.querySelectorAll('.tabbar button').forEach((b) => {
+    b.addEventListener('click', () => { haptic(); setTab(b.dataset.tab); });
+  });
   document.querySelectorAll('.segmented button').forEach((b) => {
     b.addEventListener('click', () => {
+      haptic();
       mode = b.dataset.mode;
       onChange();
     });
   });
-  $('form').addEventListener('input', onChange);
-  $('form').addEventListener('change', onChange);
+
+  // 入力・設定タブの項目はどちらもここで拾う
+  const onFieldEvent = (e) => { if (FIELDS.includes(e.target.id)) onChange(); };
+  document.addEventListener('input', onFieldEvent);
+  document.addEventListener('change', onFieldEvent);
   $('form').addEventListener('submit', (e) => e.preventDefault()); // Enterキーでページが再読み込みされないように
   $('goBtn').addEventListener('click', submit);
 
   $('apiKey').addEventListener('change', () => storage(() => localStorage.setItem(API_KEY_KEY, $('apiKey').value.trim())));
-  $('model').addEventListener('change', () => storage(() => localStorage.setItem(MODEL_KEY, $('model').value)));
+  $('model').addEventListener('change', () => { prefs.model = $('model').value; savePrefs(); });
+  $('engine').addEventListener('change', () => { prefs.engine = $('engine').value; savePrefs(); });
+
+  $('resetBtn').addEventListener('click', () => {
+    if (!confirm('現在pt・PASS・ホイッスル・メガホン・BP・チケットを初期値に戻しますか？')) return;
+    const values = resetProgress(getValues());
+    FIELDS.forEach((k) => setValue(k, values[k]));
+    onChange();
+    toast('進捗の入力をリセットしました');
+  });
 
   $('files').addEventListener('change', (e) => { addFiles(e.target.files); e.target.value = ''; });
   const drop = $('drop');
@@ -540,14 +853,26 @@ function init() {
   });
   window.addEventListener('paste', (e) => {
     const files = [...(e.clipboardData?.files || [])];
-    if (files.length) addFiles(files);
+    if (files.length) {
+      setTab('scan');
+      addFiles(files);
+    }
   });
   $('readBtn').addEventListener('click', readImages);
   $('clearImgBtn').addEventListener('click', () => {
     images = [];
     renderThumbs();
+    $('ocrResults').innerHTML = '';
     setStatus('');
   });
+
+  $('sheet').addEventListener('click', (e) => { if (e.target === $('sheet')) closeSheet(); });
+  $('sheetClose').addEventListener('click', closeSheet);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeSheet(); });
+
+  if ('serviceWorker' in navigator && location.protocol === 'https:') {
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+  }
 }
 
 init();

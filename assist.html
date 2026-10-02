@@ -5,174 +5,252 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>enst-lab 入力アシスト</title>
   <meta name="description" content="スクショから数値を読み取り、enst-lab のイベントダイヤ計算機（ユニット新曲イベント用）に代わりに入力して計算します。">
+  <meta name="theme-color" content="#0f0c1d" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#f5f3fb" media="(prefers-color-scheme: light)">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="ダイヤ計算">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon-180.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@500;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="assist.css">
 </head>
 <body>
-  <header class="top">
-    <h1>enst-lab 入力アシスト</h1>
-    <p class="lead">スクショを入れる → 数字を確認 → ボタンひとつで <a href="https://enst-lab.com/event.php" target="_blank" rel="noopener">enst-lab</a> の計算結果を開きます。</p>
+  <div class="bg" aria-hidden="true"><i></i><i></i><i></i></div>
+
+  <!-- 上部バー -->
+  <header class="appbar">
+    <div class="appbar-row">
+      <div class="brand">
+        <span class="logo" aria-hidden="true">◆</span>
+        <div>
+          <h1>ダイヤ計算アシスト</h1>
+          <p id="termText">for enst-lab</p>
+        </div>
+      </div>
+      <div class="ring" id="ring" role="img" aria-label="入力の進み具合">
+        <svg viewBox="0 0 36 36"><circle class="track" cx="18" cy="18" r="15.5"/><circle class="meter" id="ringMeter" cx="18" cy="18" r="15.5"/></svg>
+        <span id="ringText">0/0</span>
+      </div>
+    </div>
+    <div class="segmented" role="radiogroup" aria-label="計算モード">
+      <span class="seg-thumb" aria-hidden="true"></span>
+      <button type="button" data-mode="now" role="radio">今のイベント</button>
+      <button type="button" data-mode="start" role="radio">開始から（次イベ）</button>
+    </div>
   </header>
 
   <main>
-    <!-- 計算モード -->
-    <div class="segmented" role="radiogroup" aria-label="計算モード">
-      <button type="button" data-mode="now" role="radio">今のイベント<small>進捗から残りを計算</small></button>
-      <button type="button" data-mode="start" role="radio">イベント開始から<small>総ダイヤ・次イベ用</small></button>
-    </div>
-    <p class="hint center" id="termText"></p>
-
-    <!-- 画像読み取り -->
-    <section class="card">
-      <h2>📷 スクショから読み取り</h2>
-      <p class="hint">イベント画面・ユニット編成画面・ライブ結果画面などのスクショを入れると、分かった数字を下に自動で入れます。何枚でもOK。</p>
-      <label class="drop" id="drop">
+    <!-- ===== スキャン ===== -->
+    <section class="view" id="view-scan" data-view="scan">
+      <label class="hero" id="drop">
         <input type="file" id="files" accept="image/*" multiple hidden>
-        <span>タップして画像を選ぶ<br><small>（ドラッグ＆ドロップ・貼り付けも可）</small></span>
+        <span class="hero-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/><circle cx="12" cy="12" r="3.2"/></svg>
+        </span>
+        <strong>スクショを追加</strong>
+        <small>タップで選択・ドラッグ・貼り付けOK</small>
       </label>
+
       <div class="thumbs" id="thumbs"></div>
-      <div class="row">
-        <button type="button" id="readBtn" class="primary" disabled>読み取る</button>
-        <button type="button" id="clearImgBtn" class="ghost" disabled>画像をクリア</button>
-      </div>
+
+      <button type="button" id="readBtn" class="btn grad big" disabled>
+        <span class="btn-label">読み取って入力する</span>
+        <span class="spinner" aria-hidden="true"></span>
+      </button>
+      <button type="button" id="clearImgBtn" class="btn ghost" disabled>画像をクリア</button>
       <p class="status" id="ocrStatus" aria-live="polite"></p>
+      <div id="ocrResults"></div>
+
+      <div class="tips">
+        <p class="eyebrow">読み取れるもの</p>
+        <ul>
+          <li><b>イベント画面</b> 現在pt・PASS・ホイッスル・メガホン</li>
+          <li><b>ホーム画面</b> BP・お仕事チケット・RANK</li>
+          <li><b>編成／ライブ結果</b> 特効％・ライブスコア</li>
+        </ul>
+      </div>
     </section>
 
-    <form id="form" autocomplete="off" novalidate>
-      <section class="card">
-        <h2>🎯 目標</h2>
-        <div class="field big">
-          <label for="goal_point">目標ポイント</label>
-          <div class="unit"><input id="goal_point" name="goal_point" inputmode="numeric" placeholder="350"><span>万pt</span></div>
+    <!-- ===== 入力 ===== -->
+    <section class="view" id="view-input" data-view="input">
+      <form id="form" autocomplete="off" novalidate>
+        <div class="goal field">
+          <label for="goal_point" class="eyebrow">目標ポイント</label>
+          <div class="goal-input">
+            <input id="goal_point" name="goal_point" inputmode="numeric" placeholder="350">
+            <span>万pt</span>
+          </div>
         </div>
-      </section>
 
-      <section class="card" data-show="now">
-        <h2>📈 いまの進捗</h2>
-        <div class="grid">
-          <div class="field">
+        <p class="group-title" data-show="now">いまの進捗</p>
+        <div class="list" data-show="now">
+          <div class="item field">
             <label for="evepoint_now">現在イベントpt</label>
-            <div class="unit"><input id="evepoint_now" name="evepoint_now" inputmode="numeric" placeholder="1234567"><span>pt</span></div>
+            <div class="val"><input id="evepoint_now" name="evepoint_now" inputmode="numeric" placeholder="0"><span>pt</span></div>
           </div>
-          <div class="field">
+          <div class="item field">
             <label for="pass_now">所持PASS</label>
-            <div class="unit"><input id="pass_now" name="pass_now" inputmode="numeric" placeholder="0"><span>枚</span></div>
+            <div class="val"><input id="pass_now" name="pass_now" inputmode="numeric" placeholder="0"><span>枚</span></div>
           </div>
-          <div class="field">
+          <div class="item field">
             <label for="whistle">所持ホイッスル</label>
-            <div class="unit"><input id="whistle" name="whistle" inputmode="numeric" placeholder="0"><span>個</span></div>
+            <div class="val"><input id="whistle" name="whistle" inputmode="numeric" placeholder="0"><span>個</span></div>
           </div>
-          <div class="field">
+          <div class="item field">
             <label>所持メガホン</label>
             <div class="chips" data-for="megaphone" data-values="0,1,2,3"></div>
             <input type="hidden" id="megaphone" name="megaphone">
           </div>
         </div>
-      </section>
 
-      <section class="card" id="whistleCard">
-        <h2>🎁 イベント応援ホイッスル（ログボ）</h2>
-        <div class="chips" data-for="whistle100" data-values="0,100,200" data-labels="配布なし,100個,200個"></div>
-        <input type="hidden" id="whistle100" name="whistle100">
-        <p class="hint">獲得予定BPに追加されます。受け取り後は「所持ホイッスル」に足してください。</p>
-      </section>
-
-      <section class="card">
-        <h2>🎤 編成</h2>
-        <div class="grid two">
-          <div class="field">
-            <label for="bonus_nomal">通常曲 特効</label>
-            <div class="unit"><input id="bonus_nomal" name="bonus_nomal" inputmode="numeric" placeholder="50"><span>%</span></div>
-          </div>
-          <div class="field">
-            <label for="bonus_event">イベ曲 特効</label>
-            <div class="unit"><input id="bonus_event" name="bonus_event" inputmode="numeric" placeholder="50"><span>%</span></div>
-          </div>
-          <div class="field">
-            <label for="nomal_score">通常曲スコア</label>
-            <div class="unit"><input id="nomal_score" name="nomal_score" inputmode="numeric" placeholder="300"><span>万</span></div>
-          </div>
-          <div class="field">
-            <label for="event_score">イベ曲スコア</label>
-            <div class="unit"><input id="event_score" name="event_score" inputmode="numeric" placeholder="320"><span>万</span></div>
+        <div id="whistleCard">
+          <p class="group-title">応援ホイッスル（ログボ）</p>
+          <div class="list">
+            <div class="item field stack">
+              <div class="chips wide" data-for="whistle100" data-values="0,100,200" data-labels="配布なし,100個,200個"></div>
+              <input type="hidden" id="whistle100" name="whistle100">
+              <small class="note">獲得予定BPに追加。受け取り後は所持ホイッスルへ</small>
+            </div>
           </div>
         </div>
-        <div class="field">
-          <label>通常曲の消費BP</label>
-          <div class="chips" data-for="bp_normal" data-values="1,2,3,6,10"></div>
-          <input type="hidden" id="bp_normal" name="bp_normal">
-        </div>
-        <div class="field">
-          <label>お仕事</label>
-          <div class="chips" data-for="work_type" data-values="event,normal,none" data-labels="イベント,通常,やらない"></div>
-          <input type="hidden" id="work_type" name="work_type">
-        </div>
-      </section>
 
-      <section class="card">
-        <h2>⚡ BP・チケット</h2>
-        <div class="grid two">
-          <div class="field">
+        <p class="group-title">編成</p>
+        <div class="list">
+          <div class="item pair">
+            <span class="pair-head"></span><span class="pair-head">通常曲</span><span class="pair-head">イベ曲</span>
+          </div>
+          <div class="item pair">
+            <label for="bonus_nomal">特効</label>
+            <div class="val field"><input id="bonus_nomal" name="bonus_nomal" inputmode="numeric" placeholder="0" aria-label="通常曲 特効"><span>%</span></div>
+            <div class="val field"><input id="bonus_event" name="bonus_event" inputmode="numeric" placeholder="0" aria-label="イベ曲 特効"><span>%</span></div>
+          </div>
+          <div class="item pair">
+            <label for="nomal_score">スコア</label>
+            <div class="val field"><input id="nomal_score" name="nomal_score" inputmode="numeric" placeholder="300" aria-label="通常曲スコア"><span>万</span></div>
+            <div class="val field"><input id="event_score" name="event_score" inputmode="numeric" placeholder="320" aria-label="イベ曲スコア"><span>万</span></div>
+          </div>
+          <div class="item field stack">
+            <label>通常曲の消費BP</label>
+            <div class="chips wide" data-for="bp_normal" data-values="1,2,3,6,10"></div>
+            <input type="hidden" id="bp_normal" name="bp_normal">
+          </div>
+          <div class="item field stack">
+            <label>お仕事</label>
+            <div class="chips wide" data-for="work_type" data-values="event,normal,none" data-labels="イベント,通常,やらない"></div>
+            <input type="hidden" id="work_type" name="work_type">
+          </div>
+        </div>
+
+        <p class="group-title">BP・チケット</p>
+        <div class="list">
+          <div class="item field">
             <label for="now_bp" id="bpLabel">現在残りBP</label>
-            <div class="stepper"><button type="button" data-step="-1" data-target="now_bp">−</button><input id="now_bp" name="now_bp" inputmode="numeric"><button type="button" data-step="1" data-target="now_bp">＋</button></div>
+            <div class="stepper"><button type="button" data-step="-1" data-target="now_bp" aria-label="減らす">−</button><input id="now_bp" name="now_bp" inputmode="numeric"><button type="button" data-step="1" data-target="now_bp" aria-label="増やす">＋</button></div>
           </div>
-          <div class="field">
+          <div class="item field">
             <label for="now_ticket" id="ticketLabel">残りお仕事チケット</label>
-            <div class="stepper"><button type="button" data-step="-1" data-target="now_ticket">−</button><input id="now_ticket" name="now_ticket" inputmode="numeric"><button type="button" data-step="1" data-target="now_ticket">＋</button></div>
+            <div class="stepper"><button type="button" data-step="-1" data-target="now_ticket" aria-label="減らす">−</button><input id="now_ticket" name="now_ticket" inputmode="numeric"><button type="button" data-step="1" data-target="now_ticket" aria-label="増やす">＋</button></div>
           </div>
         </div>
-      </section>
+      </form>
+    </section>
 
-      <details class="card" id="detail">
-        <summary><h2>⚙️ 自分用の設定（一度入れればOK）</h2></summary>
-        <div class="grid two">
-          <div class="field">
-            <label for="lost_bp">漏らすBP / 1日</label>
-            <div class="stepper"><button type="button" data-step="-1" data-target="lost_bp">−</button><input id="lost_bp" name="lost_bp" inputmode="numeric"><button type="button" data-step="1" data-target="lost_bp">＋</button></div>
-          </div>
-          <div class="field">
-            <label for="user_rank">現在のRANK</label>
-            <input id="user_rank" name="user_rank" inputmode="numeric" placeholder="125">
-          </div>
+    <!-- ===== 設定 ===== -->
+    <section class="view" id="view-settings" data-view="settings">
+      <p class="group-title">プレイヤー（一度入れればOK）</p>
+      <div class="list">
+        <div class="item field">
+          <label for="user_rank">現在のRANK</label>
+          <div class="val"><input id="user_rank" name="user_rank" form="form" inputmode="numeric" placeholder="125"></div>
         </div>
-        <div class="field">
+        <div class="item field">
+          <label for="lost_bp">漏らすBP / 1日</label>
+          <div class="stepper"><button type="button" data-step="-1" data-target="lost_bp" aria-label="減らす">−</button><input id="lost_bp" name="lost_bp" form="form" inputmode="numeric"><button type="button" data-step="1" data-target="lost_bp" aria-label="増やす">＋</button></div>
+        </div>
+        <div class="item field">
           <label>ソロライブ</label>
           <div class="chips" data-for="sololiveflg" data-values="0,1" data-labels="やらない,やる"></div>
-          <input type="hidden" id="sololiveflg" name="sololiveflg">
+          <input type="hidden" id="sololiveflg" name="sololiveflg" form="form">
         </div>
-        <div class="field">
+        <div class="item field stack">
           <label for="office_LV">営業部レベル</label>
-          <select id="office_LV" name="office_LV"></select>
+          <select id="office_LV" name="office_LV" form="form"></select>
         </div>
-      </details>
-    </form>
-
-    <details class="card" id="apiCard">
-      <summary><h2>🔑 画像読み取りの設定</h2></summary>
-      <p class="hint">画像の読み取りには Claude API を使います。APIキーはこの端末のブラウザにだけ保存され、Anthropic 以外には送信されません。</p>
-      <div class="field">
-        <label for="apiKey">Anthropic APIキー</label>
-        <input id="apiKey" type="password" placeholder="sk-ant-..." autocomplete="off">
       </div>
-      <div class="field">
-        <label for="model">モデル</label>
-        <select id="model">
-          <option value="claude-opus-5-5">Claude Opus 5.5（高精度）</option>
-          <option value="claude-sonnet-5-5">Claude Sonnet 5.5（安め）</option>
-          <option value="claude-haiku-4-5">Claude Haiku 4.5（最安）</option>
-        </select>
-      </div>
-    </details>
 
-    <p class="footnote">
-      enst-lab（非公式ファンツール）への入力を代行するだけの自分用ツールです。計算は enst-lab のサーバーで行われ、結果は enst-lab のページで表示されます。
-      <br><a href="index.html">BP・ダイヤの簡易計算機（オフライン版）はこちら</a>
-    </p>
+      <p class="group-title">画像読み取り</p>
+      <div class="list">
+        <div class="item field stack">
+          <label for="engine">読み取り方法</label>
+          <select id="engine">
+            <option value="local">端末内OCR（無料・APIキー不要）</option>
+            <option value="claude">Claude API（高精度・有料）</option>
+          </select>
+        </div>
+      </div>
+      <p class="note pad">端末内OCRは画像を外部に送らず、この端末の中だけで文字を読み取ります（初回のみ読み取りデータを数MBダウンロード）。読み間違いがあれば、画像の上の数字をタップして選び直せます。</p>
+
+      <p class="group-title">Claude API（使う場合のみ）</p>
+      <div class="list">
+        <div class="item field stack">
+          <label for="apiKey">APIキー</label>
+          <input id="apiKey" type="password" placeholder="sk-ant-..." autocomplete="off">
+        </div>
+        <div class="item field stack">
+          <label for="model">モデル</label>
+          <select id="model">
+            <option value="claude-opus-5-5">Opus 5.5（高精度）</option>
+            <option value="claude-sonnet-5-5">Sonnet 5.5（安め）</option>
+            <option value="claude-haiku-4-5">Haiku 4.5（最安）</option>
+          </select>
+        </div>
+      </div>
+      <p class="note pad">APIキーはこの端末のブラウザにだけ保存され、Anthropic 以外には送信されません。</p>
+
+      <p class="group-title">その他</p>
+      <div class="list">
+        <a class="item link" href="https://enst-lab.com/event.php" target="_blank" rel="noopener">enst-lab を直接開く<span>↗</span></a>
+        <a class="item link" href="index.html">オフライン簡易計算機<span>›</span></a>
+        <button type="button" class="item link danger" id="resetBtn">進捗の入力をリセット<span>↺</span></button>
+      </div>
+      <p class="note pad">enst-lab（非公式ファンツール）への入力を代行する自分用ツールです。計算は enst-lab で行われ、結果は enst-lab のページに表示されます。</p>
+    </section>
   </main>
 
-  <div class="dock">
-    <p class="dock-msg" id="dockMsg"></p>
-    <button type="button" id="goBtn" class="primary big">enst-lab で計算する ↗</button>
+  <!-- 計算ボタン -->
+  <div class="cta" id="cta">
+    <p class="cta-msg" id="dockMsg"></p>
+    <button type="button" id="goBtn" class="btn grad big">enst-lab で計算する<span aria-hidden="true">↗</span></button>
   </div>
+
+  <!-- タブバー -->
+  <nav class="tabbar" aria-label="画面切り替え">
+    <button type="button" data-tab="scan"><svg viewBox="0 0 24 24"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/><circle cx="12" cy="12" r="3"/></svg>スキャン</button>
+    <button type="button" data-tab="input"><svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/></svg>入力<i class="badge" id="badge"></i></button>
+    <button type="button" data-tab="settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg>設定</button>
+  </nav>
+
+  <!-- 読み取った数字をどの項目に入れるか選ぶシート -->
+  <div class="sheet" id="sheet" aria-hidden="true">
+    <div class="sheet-panel" role="dialog" aria-modal="true" aria-labelledby="sheetTitle">
+      <div class="sheet-grip" aria-hidden="true"></div>
+      <div class="sheet-head">
+        <div>
+          <p class="eyebrow" id="sheetTitle">この数字を入れる項目</p>
+          <p class="sheet-value" id="sheetValue"></p>
+        </div>
+        <button type="button" class="sheet-close" id="sheetClose" aria-label="閉じる">×</button>
+      </div>
+      <div class="sheet-list" id="sheetList"></div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
   <script src="assist.js" type="module"></script>
 </body>
