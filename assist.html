@@ -17,7 +17,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@500;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="assist.css">
+  <link rel="stylesheet" href="assist.css?v=20261002c">
 </head>
 <body data-type="unit">
   <div class="bg" aria-hidden="true"><i></i><i></i><i></i></div>
@@ -306,6 +306,22 @@
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-  <script src="assist.js" type="module"></script>
+  <script>
+    // プログラムが読み込めない・動かないときに、画面に理由を出す
+    window.addEventListener('error', function (e) {
+      // 画像やフォントの読み込み失敗は無視し、プログラムのエラーと assist.js の読み込み失敗だけ出す
+      var t = e.target;
+      var scriptFailed = t && t.tagName === 'SCRIPT' && String(t.src).indexOf('assist.js') >= 0;
+      if (!(e instanceof ErrorEvent) && !scriptFailed) return;
+      if (document.getElementById('fatal')) return;
+      var bar = document.createElement('div');
+      bar.id = 'fatal';
+      bar.className = 'fatal';
+      bar.innerHTML = '<span></span><button type="button" onclick="location.reload()">再読み込み</button>';
+      bar.firstChild.textContent = 'エラーが起きました：' + (e.message || '読み込みに失敗しました');
+      document.body.appendChild(bar);
+    }, true);
+  </script>
+  <script src="assist.js?v=20261002c" type="module"></script>
 </body>
 </html>

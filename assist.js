@@ -832,8 +832,8 @@ function preprocess(img) {
 
 const toHalf = (s) => s
   .replace(/[０-９％／，．]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
-  .replace(/[oO](?=\d)|(?<=\d)[oO]/g, '0')
-  .replace(/(?<=\d)[lI|](?=\d)/g, '1');
+  .replace(/(\d)[oO]|[oO](?=\d)/g, (m, d) => (d ? `${d}0` : '0'))
+  .replace(/(\d)[lI|](?=\d)/g, (m, d) => `${d}1`);
 
 // 1行の単語から「数字のかたまり」を取り出す（"1," "234," "567" のように分かれていても1つにまとめる）
 function numbersInLine(line, scale) {
@@ -1107,6 +1107,23 @@ function applyExtracted(r, keys) {
 }
 
 // ---- 起動 ----
+// 予期しないエラーで画面が固まったときに、何が起きたか分かるよう表示する
+function showFatal(message) {
+  let bar = document.getElementById('fatal');
+  if (!bar) {
+    bar = el('div', 'fatal');
+    bar.id = 'fatal';
+    const reload = el('button', '', '再読み込み');
+    reload.type = 'button';
+    reload.addEventListener('click', () => location.reload());
+    bar.append(el('span'), reload);
+    document.body.appendChild(bar);
+  }
+  bar.firstChild.textContent = `エラーが起きました：${message}`;
+}
+window.addEventListener('error', (e) => showFatal(e.message || 'unknown'));
+window.addEventListener('unhandledrejection', (e) => showFatal(e.reason?.message || String(e.reason)));
+
 function init() {
   buildChips();
   buildOffice();
@@ -1199,7 +1216,7 @@ function init() {
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeSheet(); });
 
   if ('serviceWorker' in navigator && location.protocol === 'https:') {
-    navigator.serviceWorker.register('sw.js').catch(() => {});
+    navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).catch(() => {});
   }
 }
 
