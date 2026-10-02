@@ -17,7 +17,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@500;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="assist.css?v=20261003i">
+  <link rel="stylesheet" href="assist.css?v=20261003j">
 </head>
 <body data-type="unit">
   <div class="bg" aria-hidden="true"><i></i><i></i><i></i></div>
@@ -110,38 +110,6 @@
           </div>
         </div>
 
-        <p class="group-title" data-show="now">いまの進捗</p>
-        <div class="list" data-show="now">
-          <div class="item field">
-            <label for="evepoint_now">現在イベントpt</label>
-            <div class="val"><input id="evepoint_now" name="evepoint_now" inputmode="numeric" placeholder="0"><span>pt</span></div>
-          </div>
-          <div class="item field">
-            <label for="pass_now">所持PASS</label>
-            <div class="val"><input id="pass_now" name="pass_now" inputmode="numeric" placeholder="0"><span>枚</span></div>
-          </div>
-          <div class="item field">
-            <label for="whistle">所持ホイッスル</label>
-            <div class="val"><input id="whistle" name="whistle" inputmode="numeric" placeholder="0"><span>個</span></div>
-          </div>
-          <div class="item field">
-            <label>所持メガホン</label>
-            <div class="chips" data-for="megaphone" data-values="0,1,2,3"></div>
-            <input type="hidden" id="megaphone" name="megaphone">
-          </div>
-        </div>
-
-        <div id="whistleCard">
-          <p class="group-title">応援ホイッスル（ログボ）</p>
-          <div class="list">
-            <div class="item field stack">
-              <div class="chips wide" data-for="whistle100" id="whistle100Chips"></div>
-              <input type="hidden" id="whistle100" name="whistle100">
-              <small class="note">獲得予定BPに追加。受け取り後は所持ホイッスルへ</small>
-            </div>
-          </div>
-        </div>
-
         <p class="group-title">編成</p>
         <div class="list">
           <div class="item grid-row head">
@@ -188,6 +156,43 @@
             <label>お仕事</label>
             <div class="chips wide" data-for="work_type" data-values="event,normal,none" data-labels="イベント,通常,やらない"></div>
             <input type="hidden" id="work_type" name="work_type">
+          </div>
+        </div>
+
+        <div id="whistleCard">
+          <p class="group-title">応援ホイッスル（ログボ）</p>
+          <div class="list">
+            <div class="item field stack">
+              <div class="chips wide" data-for="whistle100" id="whistle100Chips"></div>
+              <input type="hidden" id="whistle100" name="whistle100">
+              <small class="note">獲得予定BPに追加。受け取り後は所持ホイッスルへ</small>
+            </div>
+          </div>
+        </div>
+
+        <button type="button" class="scan-divider" id="toScan">
+          <span class="scan-divider-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/><circle cx="12" cy="12" r="3"/></svg></span>
+          <span class="scan-divider-text"><b>ここから下はスキャンで入力できます</b><small>イベントページ・アイテム倉庫のスクショから自動で入ります</small></span>
+          <span class="scan-divider-go" aria-hidden="true">›</span>
+        </button>
+        <p class="group-title" data-show="now">いまの進捗</p>
+        <div class="list" data-show="now">
+          <div class="item field">
+            <label for="evepoint_now">現在イベントpt</label>
+            <div class="val"><input id="evepoint_now" name="evepoint_now" inputmode="numeric" placeholder="0"><span>pt</span></div>
+          </div>
+          <div class="item field">
+            <label for="pass_now">所持PASS</label>
+            <div class="val"><input id="pass_now" name="pass_now" inputmode="numeric" placeholder="0"><span>枚</span></div>
+          </div>
+          <div class="item field">
+            <label for="whistle">所持ホイッスル</label>
+            <div class="val"><input id="whistle" name="whistle" inputmode="numeric" placeholder="0"><span>個</span></div>
+          </div>
+          <div class="item field">
+            <label>所持メガホン</label>
+            <div class="chips" data-for="megaphone" data-values="0,1,2,3"></div>
+            <input type="hidden" id="megaphone" name="megaphone">
           </div>
         </div>
 
@@ -309,6 +314,6 @@
       document.body.appendChild(bar);
     }, true);
   </script>
-  <script src="assist.js?v=20261003i" type="module"></script>
+  <script src="assist.js?v=20261003j" type="module"></script>
 </body>
 </html>

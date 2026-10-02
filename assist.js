@@ -1389,6 +1389,7 @@ function init() {
   document.addEventListener('change', onFieldEvent);
   $('form').addEventListener('submit', (e) => e.preventDefault()); // Enterキーでページが再読み込みされないように
   $('goBtn').addEventListener('click', calculate);
+  $('toScan').addEventListener('click', () => { haptic(); setTab('scan'); });
 
   $('proxyUrl').addEventListener('change', () => {
     const v = $('proxyUrl').value.trim();
