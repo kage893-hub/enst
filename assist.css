@@ -353,6 +353,22 @@ input[type="password"]:focus, select:focus { border-color: var(--accent); }
   font-size: 0.8rem; line-height: 1; padding: 0;
 }
 
+.guide {
+  margin-bottom: 14px; padding: 16px 18px; border-radius: var(--radius);
+  background: var(--glass); border: 1px solid var(--line);
+  backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+}
+.guide ol { margin: 4px 0 10px; padding: 0; list-style: none; counter-reset: step; display: grid; gap: 10px; }
+.guide li { position: relative; padding-left: 38px; counter-increment: step; display: flex; flex-direction: column; }
+.guide li::before {
+  content: counter(step); position: absolute; left: 0; top: 0;
+  width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center;
+  background: var(--grad); color: #fff; font-family: var(--num); font-weight: 800; font-size: 0.85rem;
+}
+.guide b { font-size: 0.95rem; }
+.guide span { font-size: 0.78rem; color: var(--muted); }
+.guide small { font-size: 0.74rem; color: var(--muted); }
+.tips li { list-style: disc; margin-left: 1.1em; }
 .tips { margin-top: 24px; padding: 16px 18px; border-radius: var(--radius); background: var(--glass); border: 1px solid var(--line); }
 .tips ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 8px; font-size: 0.85rem; }
 .tips li { display: flex; flex-direction: column; }

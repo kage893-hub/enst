@@ -17,7 +17,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@500;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="assist.css?v=20261003g">
+  <link rel="stylesheet" href="assist.css?v=20261003h">
 </head>
 <body data-type="unit">
   <div class="bg" aria-hidden="true"><i></i><i></i><i></i></div>
@@ -52,6 +52,21 @@
   <main>
     <!-- ===== スキャン ===== -->
     <section class="view" id="view-scan" data-view="scan">
+      <div class="guide">
+        <p class="eyebrow">この2枚のスクショを貼ってください</p>
+        <ol>
+          <li>
+            <b>イベントページ</b>
+            <span>右下に「累計イベントpt」が出ている画面 → 現在イベントpt・PASS</span>
+          </li>
+          <li>
+            <b>アイテム倉庫（所持アイテム → 消費アイテム）</b>
+            <span>→ BP・お仕事チケット・ホイッスル・メガホン</span>
+          </li>
+        </ol>
+        <small>2枚まとめて選べます。編成や目標などは「入力」タブで一度入れておけばOK。</small>
+      </div>
+
       <label class="hero" id="drop">
         <input type="file" id="files" accept="image/*" multiple hidden>
         <span class="hero-icon" aria-hidden="true">
@@ -72,11 +87,11 @@
       <div id="ocrResults"></div>
 
       <div class="tips">
-        <p class="eyebrow">読み取れるもの</p>
+        <p class="eyebrow">うまく読めないとき</p>
         <ul>
-          <li><b>イベント画面（おすすめ）</b> 累計イベントpt・PASS を自動で読み取り</li>
-          <li><b>アイテム画面（おすすめ）</b> BP・お仕事チケット・ホイッスル（メガホンはメガホンを選んだ状態で）</li>
-          <li><b>編成／ライブ結果</b> 特効％・ライブスコア</li>
+          <li>ゲーム画面全体が写るように撮ってください（切り取らない）</li>
+          <li>ほかの画面のスクショは、画像の上の数字をタップして項目を選べます</li>
+          <li>読み取った数字は「入力」タブで直せます</li>
         </ul>
       </div>
     </section>
@@ -232,35 +247,6 @@
       </div>
       <p class="note pad">enst-lab の結果はブラウザから直接読み取れないため、中継サーバーを通して受け取ります。ふだんは空欄のままでOKです（自分で用意した中継サーバーを使う場合だけ入力。作り方は <a href="https://github.com/kage893-hub/enst#結果をアプリ内に表示する中継サーバー" target="_blank" rel="noopener">README</a>）。</p>
 
-      <p class="group-title">画像読み取り</p>
-      <div class="list">
-        <div class="item field stack">
-          <label for="engine">読み取り方法</label>
-          <select id="engine">
-            <option value="local">端末内OCR（無料・APIキー不要）</option>
-            <option value="claude">Claude API（高精度・有料）</option>
-          </select>
-        </div>
-      </div>
-      <p class="note pad">端末内OCRは画像を外部に送らず、この端末の中だけで文字を読み取ります（初回のみ読み取りデータを数MBダウンロード）。読み間違いがあれば、画像の上の数字をタップして選び直せます。</p>
-
-      <p class="group-title">Claude API（使う場合のみ）</p>
-      <div class="list">
-        <div class="item field stack">
-          <label for="apiKey">APIキー</label>
-          <input id="apiKey" type="password" placeholder="sk-ant-..." autocomplete="off">
-        </div>
-        <div class="item field stack">
-          <label for="model">モデル</label>
-          <select id="model">
-            <option value="claude-opus-5-5">Opus 5.5（高精度）</option>
-            <option value="claude-sonnet-5-5">Sonnet 5.5（安め）</option>
-            <option value="claude-haiku-4-5">Haiku 4.5（最安）</option>
-          </select>
-        </div>
-      </div>
-      <p class="note pad">APIキーはこの端末のブラウザにだけ保存され、Anthropic 以外には送信されません。</p>
-
       <p class="group-title">その他</p>
       <div class="list">
         <button type="button" class="item link" id="shareBtn">友達にアプリを共有<span>⇪</span></button>
@@ -323,6 +309,6 @@
       document.body.appendChild(bar);
     }, true);
   </script>
-  <script src="assist.js?v=20261003g" type="module"></script>
+  <script src="assist.js?v=20261003h" type="module"></script>
 </body>
 </html>

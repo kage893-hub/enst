@@ -1,7 +1,7 @@
 // enst-lab 入力アシスト
 // 入力内容を enst-lab のイベントダイヤ計算機（ユニット新曲・ツアー）へ送り、結果を受け取ってアプリ内に表示する。
 // enst-lab は他サイトからの結果の読み取りを許可していないため、結果の受け取りには中継サーバー（Cloudflare Workers）を使う。
-// 画像読み取りは「端末内OCR（Tesseract.js・無料）」が標準。Claude API は任意で使える高精度モード。
+// 画像読み取りは端末内のOCR（Tesseract.js・無料）で行う。
 
 // enst-lab の各ページの `event_new_next` / `event_sp_next` から送られる値（2026/10 時点）
 const ENST_EVENT_FLG = 'sp';
@@ -26,8 +26,6 @@ const EVENT_TYPES = {
 const STORAGE_KEY = 'enst-assist-v1';
 const PREFS_KEY = 'enst-assist-prefs';
 const RESULT_KEY = 'enst-assist-result';
-const API_KEY_KEY = 'enst-assist-apikey';
-const SDK_URL = 'https://cdn.jsdelivr.net/npm/@anthropic-ai/sdk/+esm';
 const TESSERACT_URL = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
 
 const QUICK_GOAL = '350';
@@ -151,7 +149,7 @@ function eventKey(d = new Date()) {
 let mode = 'now';        // 'now' | 'start'
 let eventType = 'unit';  // 'unit' | 'tour'
 let images = [];         // { name, mediaType, data(base64), url, width, height }
-let prefs = { tab: 'input', engine: 'local', model: 'claude-opus-5-5', proxy: '' };
+let prefs = { tab: 'input', proxy: '' };
 
 const type = () => EVENT_TYPES[eventType];
 
@@ -201,9 +199,6 @@ function load() {
   mode = isEventTerm() ? (saved.eventKey === eventKey() && saved.mode) || 'now' : 'start';
 
   prefs = { ...prefs, ...(storage(() => JSON.parse(localStorage.getItem(PREFS_KEY))) || {}) };
-  $('apiKey').value = storage(() => localStorage.getItem(API_KEY_KEY)) || '';
-  $('model').value = prefs.model;
-  $('engine').value = prefs.engine;
   $('proxyUrl').value = prefs.proxy || '';
 }
 
@@ -781,8 +776,7 @@ async function readImages() {
   btn.classList.add('loading');
   $('ocrResults').innerHTML = '';
   try {
-    if (prefs.engine === 'claude') await readWithClaude();
-    else await readLocally();
+    await readLocally();
   } finally {
     btn.classList.remove('loading');
     btn.disabled = !images.length;
@@ -832,47 +826,44 @@ const SCREEN_LAYOUTS = [
     resolve: (v) => (v.evepoint_now ? [v.evepoint_now, v.pass_now].filter(Boolean) : null),
   },
   {
-    name: 'アイテム画面',
+    name: 'アイテム倉庫',
     base: { w: 2000, h: 900 },
     regions: [
       // 上のバー「BP 4/10」「WORK 7/12」（紺地に白文字）
       { id: 'now_bp', ax: 'right', ay: 'top', x0: 1150, x1: 1265, y0: 44, y1: 86, ink: 'light', kind: 'fraction' },
       { id: 'now_ticket', ax: 'right', ay: 'top', x0: 1470, x1: 1575, y0: 44, y1: 86, ink: 'light', kind: 'fraction' },
-      // 右のパネル：選んでいるアイテムの名前と「所持 32」
-      { id: 'item_name', ax: 'center', ay: 'middle', x0: 1320, x1: 1580, y0: 368, y1: 418, ink: 'dark', kind: 'text' },
-      { id: 'item_count', ax: 'center', ay: 'middle', x0: 1405, x1: 1560, y0: 474, y1: 532, ink: 'outline', kind: 'number' },
+      // 「消費アイテム」一覧の先頭3マス：アイコンの色でメガホン／ホイッスルを見分け、下の「×32」を読む
+      ...[[318, 448], [465, 595], [612, 742]].flatMap(([x0, x1], i) => [
+        { id: `cell${i}_icon`, ax: 'center', ay: 'middle', x0: x0 + 5, x1: x1 - 5, y0: 268, y1: 345, kind: 'icon' },
+        { id: `cell${i}_count`, ax: 'center', ay: 'middle', x0, x1, y0: 343, y1: 392, ink: 'outline', kind: 'number' },
+      ]),
     ],
     resolve: (v) => {
       const out = [v.now_bp, v.now_ticket].filter(Boolean);
       if (!out.length) return null;
-      const name = (v.item_name?.text || '').replace(/\s/g, '');
-      const itemKey = /メガ|ガホ|ホン/.test(name) ? 'megaphone' : /ホイ|イッ|ッス|スル/.test(name) ? 'whistle' : null;
-      if (itemKey && v.item_count) out.push({ ...v.item_count, key: itemKey });
+      // メガホンは持っているときだけ一覧の先頭に出る。ホイッスルが見つかってメガホンが無ければ0個
+      for (const key of ['megaphone', 'whistle']) {
+        const i = [0, 1, 2].find((n) => v[`cell${n}_icon`]?.value === key && v[`cell${n}_count`]);
+        if (i !== undefined) out.push({ ...v[`cell${i}_count`], key });
+      }
+      if (out.some((n) => n.key === 'whistle') && !out.some((n) => n.key === 'megaphone')) {
+        out.push({ key: 'megaphone', value: 0, text: '0', bbox: null });
+      }
       return out;
     },
   },
 ];
 
 let digitWorker = null;
-let textWorker = null;
 
 async function getDigitWorker() {
   if (!window.Tesseract) await loadScript(TESSERACT_URL);
   if (!digitWorker) {
     digitWorker = await window.Tesseract.createWorker('eng', 1);
-    // 数字・カンマ・スラッシュ・"pt" だけを、1行の文字として読む
-    await digitWorker.setParameters({ tessedit_char_whitelist: '0123456789,/pt', tessedit_pageseg_mode: '7' });
+    // 数字・カンマ・スラッシュ・"pt"・"x"（アイテム数の「×」）だけを、1行の文字として読む
+    await digitWorker.setParameters({ tessedit_char_whitelist: '0123456789,/ptx', tessedit_pageseg_mode: '7' });
   }
   return digitWorker;
-}
-
-async function getTextWorker() {
-  if (!window.Tesseract) await loadScript(TESSERACT_URL);
-  if (!textWorker) {
-    textWorker = await window.Tesseract.createWorker('jpn', 1);
-    await textWorker.setParameters({ tessedit_pageseg_mode: '7' });
-  }
-  return textWorker;
 }
 
 const BASE_INSET = 114; // 基準のスクショの左右の余白（ノッチよけ）
@@ -1017,16 +1008,12 @@ function parseRegionText(r, text) {
     const m = text.match(/^(\d{1,3})\/(\d{1,2})$/);
     return m && Number(m[2]) > 0 ? Number(m[1]) : null;
   }
-  const m = text.match(/^(\d{1,3}(?:,?\d{3})*)(pt)?$/);
+  const m = text.replace(/^x+/, '').match(/^(\d{1,3}(?:,?\d{3})*)(pt)?$/);
   return m ? Number(m[1].replace(/,/g, '')) : null;
 }
 
 async function readRegion(im, rect, r) {
-  if (r.kind === 'text') {
-    const worker = await getTextWorker();
-    const { data } = await worker.recognize(binarizeRegion(im, rect, r.ink, 0));
-    return { text: data.text.trim(), conf: data.confidence };
-  }
+  if (r.kind === 'icon') return { value: classifyIcon(im, rect), text: '', conf: 100 };
   const worker = await getDigitWorker();
   let best = null;
   for (let level = 0; level < 3; level++) {
@@ -1038,6 +1025,34 @@ async function readRegion(im, rect, r) {
     if (cand.value !== null && cand.conf >= 80) break;
   }
   return best;
+}
+
+// アイテムのアイコンを色で見分ける：メガホンはオレンジの筒、ホイッスルは赤いホイッスル
+function classifyIcon(im, rect) {
+  const c = document.createElement('canvas');
+  c.width = Math.max(1, Math.round(rect.w));
+  c.height = Math.max(1, Math.round(rect.h));
+  const g = c.getContext('2d');
+  g.drawImage(im, rect.x, rect.y, rect.w, rect.h, 0, 0, c.width, c.height);
+  const d = g.getImageData(0, 0, c.width, c.height).data;
+  let orange = 0;
+  let red = 0;
+  for (let i = 0; i < d.length; i += 4) {
+    const r = d[i];
+    const gr = d[i + 1];
+    const b = d[i + 2];
+    const mx = Math.max(r, gr, b);
+    const mn = Math.min(r, gr, b);
+    if (mx < 120 || mx - mn < 80) continue; // 暗い色・くすんだ色は数えない
+    let h = mx === r ? ((gr - b) / (mx - mn) + 6) % 6 : mx === gr ? (b - r) / (mx - mn) + 2 : (r - gr) / (mx - mn) + 4;
+    h *= 60;
+    if (h >= 15 && h <= 40) orange++;
+    if (h >= 330 || h < 10) red++;
+  }
+  const n = d.length / 4;
+  if (orange / n >= 0.1) return 'megaphone';
+  if (red / n >= 0.1) return 'whistle';
+  return null;
 }
 
 function loadImage(src) {
@@ -1056,7 +1071,7 @@ async function readByLayout(img) {
   const H = im.naturalHeight;
   if (W < H * 1.2) return null; // ゲーム画面は横長
   const f = img.width / W; // 表示用の縮小画像の座標に直す
-  const ok = (r, hit) => hit && (r.kind === 'text' || (hit.value !== null && hit.conf >= 40));
+  const ok = (r, hit) => hit && hit.value !== null && hit.value !== undefined && (r.kind === 'icon' || hit.conf >= 40);
   // 端の余白の候補ごとに読み、欠けずに読めたもの（文字が長く、自信度が高いもの）を選ぶ
   const readBest = async (layout, r) => {
     let best = null;
@@ -1234,7 +1249,7 @@ async function readLocally() {
     const auto = [...autoFilled].map((k) => `${LABELS[k]} ${Number($(k).value).toLocaleString('ja-JP')}`).join('・');
     setStatus(count
       ? `${auto ? `自動で入れました：${auto}\n` : ''}画像の上の数字をタップすると、どの項目か選んで入力できます。`
-      : '数字が見つかりませんでした。数字がはっきり写ったスクショで試すか、設定で「Claude API」を選んでください。',
+      : '数字が見つかりませんでした。イベントページかアイテム倉庫のスクショを、画面全体が写った状態で入れてください。',
     count ? 'ok' : 'warn');
   } catch (err) {
     console.error(err);
@@ -1254,7 +1269,7 @@ function renderOcrResults(results) {
     im.src = img.url;
     im.alt = img.name;
     wrap.appendChild(im);
-    nums.forEach((n) => {
+    nums.filter((n) => n.bbox).forEach((n) => {
       const b = document.createElement('button');
       b.type = 'button';
       b.className = 'ocr-num';
@@ -1315,114 +1330,6 @@ function closeSheet() {
   $('sheet').setAttribute('aria-hidden', 'true');
 }
 
-// ==== Claude API（任意・高精度） ====
-const SCAN_DESCRIPTIONS = {
-  evepoint_now: '現在のイベントポイント（累計pt）',
-  pass_now: '所持しているイベントPASSの枚数',
-  whistle: '所持している応援ホイッスルの個数',
-  megaphone: '所持しているメガホンの個数',
-  now_bp: '現在のBP（ライブに使うポイント）。「8/10」のような表示なら左側の数',
-  now_ticket: '現在のお仕事チケット枚数。「5/8」のような表示なら左側の数',
-  user_rank: 'プレイヤーRANK',
-  bonus_nomal: '通常曲で使う編成のイベント特効ボーナス（%の数字だけ）',
-  nomal_score: '通常曲のライブスコア（画面に出ている数値そのまま、例: 3123456）',
-  tokkou_1_3: 'ツアーの1〜3曲目で使う編成のイベント特効ボーナス（%の数字だけ）',
-  tokkou_4: 'ツアーの4曲目で使う編成のイベント特効ボーナス（%の数字だけ）',
-  score1_3: 'ツアーの1〜3曲目のライブスコア（画面に出ている数値そのまま）',
-  score4: 'ツアーの4曲目のライブスコア（画面に出ている数値そのまま）',
-  fever: 'ツアー4曲目のFEVERボーナス（%の数字だけ）',
-  bonus_event: 'イベント曲で使う編成のイベント特効ボーナス（%の数字だけ）',
-  event_score: 'イベント曲のライブスコア（画面に出ている数値そのまま）',
-};
-
-function extractSchema(keys) {
-  const properties = {};
-  keys.forEach((k) => { properties[k] = { type: ['integer', 'null'], description: SCAN_DESCRIPTIONS[k] }; });
-  properties.notes = { type: 'string', description: '読み取れなかったもの・自信がないものの短いメモ（日本語）' };
-  return { type: 'object', properties, required: [...keys, 'notes'], additionalProperties: false };
-}
-
-const extractPrompt = () => `これは「あんさんぶるスターズ!!Music」の${type().name}イベント中のゲーム画面のスクリーンショットです。
-イベントダイヤ計算機に入力するための数値を読み取ってください。
-
-- 画面にはっきり表示されている数値だけを入れ、見えないもの・推測になるものは null にしてください。
-- 数値はカンマを除いた整数にしてください。
-- 特効ボーナスやスコアがどの曲（${eventType === 'tour' ? '1〜3曲目／4曲目／イベント曲' : '通常曲／イベント曲'}）用か画面から判別できない場合は、推測で入れず null にして notes に書いてください。
-- 複数の画像がある場合は、すべての画像の情報をまとめてください。`;
-
-let sdkPromise = null;
-function loadSdk() {
-  sdkPromise ??= import(SDK_URL).then((m) => m.default);
-  return sdkPromise;
-}
-
-async function readWithClaude() {
-  const apiKey = $('apiKey').value.trim();
-  if (!apiKey) {
-    setTab('settings');
-    $('apiKey').focus();
-    toast('Claude API を使うには APIキーが必要です');
-    return;
-  }
-  const model = prefs.model;
-  const keys = scanKeys();
-  setStatus('Claude が読み取り中…（10〜30秒ほど）', 'busy');
-
-  try {
-    const Anthropic = await loadSdk();
-    const client = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
-    const content = [
-      ...images.map((img) => ({
-        type: 'image',
-        source: { type: 'base64', media_type: img.mediaType, data: img.data },
-      })),
-      { type: 'text', text: extractPrompt() },
-    ];
-    const params = {
-      model,
-      max_tokens: 16000,
-      messages: [{ role: 'user', content }],
-      output_config: { format: { type: 'json_schema', schema: extractSchema(keys) } },
-    };
-
-    let response;
-    if (model === 'claude-haiku-4-5') {
-      response = await client.messages.create(params);
-    } else {
-      // 安全判定で断られた場合はサーバー側で別モデルに切り替えてもらう
-      params.output_config.effort = 'medium';
-      response = await client.beta.messages.create({
-        ...params,
-        betas: ['server-side-fallback-2026-07-01'],
-        fallbacks: 'default',
-      });
-    }
-
-    if (response.stop_reason === 'refusal') throw new Error('この画像は読み取りを断られました');
-    if (response.stop_reason === 'max_tokens') throw new Error('応答が途中で切れました。画像を減らして試してください');
-    const text = response.content.find((b) => b.type === 'text')?.text;
-    if (!text) throw new Error('読み取り結果が空でした');
-    applyExtracted(JSON.parse(text), keys);
-  } catch (err) {
-    console.error(err);
-    const status = err?.status;
-    const msg = status === 401 ? 'APIキーが正しくないようです'
-      : status === 429 ? '混み合っています。少し待ってからもう一度押してください'
-      : err?.message || String(err);
-    setStatus(`読み取りに失敗しました：${msg}`, 'warn');
-  }
-}
-
-function applyExtracted(r, keys) {
-  const filled = keys.filter((k) => assign(k, r[k])).map((k) => LABELS[k]);
-  onChange();
-  const note = r.notes ? `\nメモ：${r.notes}` : '';
-  setStatus(filled.length
-    ? `入力しました：${filled.join('・')}\n数字が合っているか「入力」タブで確認してください。${note}`
-    : `入力できる数字が見つかりませんでした。${note}`, filled.length ? 'ok' : 'warn');
-  if (filled.length) toast(`${filled.length}項目を入力しました`);
-}
-
 // ---- 起動 ----
 // 予期しないエラーで画面が固まったときに、何が起きたか分かるよう表示する
 function showFatal(message) {
@@ -1442,6 +1349,7 @@ window.addEventListener('error', (e) => showFatal(e.message || 'unknown'));
 window.addEventListener('unhandledrejection', (e) => showFatal(e.reason?.message || String(e.reason)));
 
 function init() {
+  storage(() => localStorage.removeItem('enst-assist-apikey')); // 以前の版で保存していたAPIキーを消す
   buildChips();
   buildOffice();
   bindSteppers();
@@ -1482,9 +1390,6 @@ function init() {
   $('form').addEventListener('submit', (e) => e.preventDefault()); // Enterキーでページが再読み込みされないように
   $('goBtn').addEventListener('click', calculate);
 
-  $('apiKey').addEventListener('change', () => storage(() => localStorage.setItem(API_KEY_KEY, $('apiKey').value.trim())));
-  $('model').addEventListener('change', () => { prefs.model = $('model').value; savePrefs(); });
-  $('engine').addEventListener('change', () => { prefs.engine = $('engine').value; savePrefs(); });
   $('proxyUrl').addEventListener('change', () => {
     const v = $('proxyUrl').value.trim();
     if (v && !/^https:\/\/[^\s]+$/.test(v)) {
