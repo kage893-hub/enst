@@ -811,38 +811,154 @@ async function getWorker() {
   return tesseractWorker;
 }
 
-// ---- 画面の決まった位置から数字を読む（イベント画面用） ----
+// ---- 画面の決まった位置から数字を読む（イベント画面・アイテム画面） ----
 // 基準にしたスクショ（2000×900）上の位置。ゲームの画面は高さに合わせて拡大縮小され、
-// 左側のUIは左端、右側のUIは右端に寄るので、端末の横幅が違ってもこの基準で位置を計算できる。
+// 左側のUIは左端、右側のUIは右端、中央のパネルは中央に寄るので、端末の横幅が違ってもこの基準で位置を計算できる。
+//   ink: 'dark' = 明るい地に濃い文字 / 'light' = 色付きの地に白い文字 / 'outline' = 縁取りだけの白抜き文字
+//   kind: 'number' = 数字 / 'fraction' = 「4/10」の左側 / 'text' = 日本語の文字
 const SCREEN_LAYOUTS = [
   {
     name: 'イベント画面',
     base: { w: 2000, h: 900 },
     regions: [
       // 右下「累計イベントpt」の数字（白地に黒文字）
-      { key: 'evepoint_now', anchor: 'right', x0: 1650, x1: 1850, y0: 568, y1: 622, ink: 'dark', suffix: 'pt' },
+      { id: 'evepoint_now', anchor: 'right', x0: 1650, x1: 1850, y0: 568, y1: 622, ink: 'dark', kind: 'number', suffix: 'pt' },
       // 左下「イベント楽曲ライブ」ボタンのPASS枚数（オレンジ地に白文字）
-      { key: 'pass_now', anchor: 'left', x0: 300, x1: 440, y0: 788, y1: 842, ink: 'light' },
+      { id: 'pass_now', anchor: 'left', x0: 300, x1: 440, y0: 788, y1: 842, ink: 'light', kind: 'number' },
     ],
+    // 「累計イベントpt」が読めたらこの画面とみなす
+    resolve: (v) => (v.evepoint_now ? [v.evepoint_now, v.pass_now].filter(Boolean) : null),
+  },
+  {
+    name: 'アイテム画面',
+    base: { w: 2000, h: 900 },
+    regions: [
+      // 上のバー「BP 4/10」「WORK 7/12」（紺地に白文字）
+      { id: 'now_bp', anchor: 'right', x0: 1150, x1: 1265, y0: 44, y1: 86, ink: 'light', kind: 'fraction' },
+      { id: 'now_ticket', anchor: 'right', x0: 1470, x1: 1575, y0: 44, y1: 86, ink: 'light', kind: 'fraction' },
+      // 右のパネル：選んでいるアイテムの名前と「所持 32」
+      { id: 'item_name', anchor: 'center', x0: 1320, x1: 1580, y0: 368, y1: 418, ink: 'dark', kind: 'text' },
+      { id: 'item_count', anchor: 'center', x0: 1405, x1: 1520, y0: 474, y1: 532, ink: 'outline', kind: 'number' },
+    ],
+    resolve: (v) => {
+      const out = [v.now_bp, v.now_ticket].filter(Boolean);
+      if (!out.length) return null;
+      const name = (v.item_name?.text || '').replace(/\s/g, '');
+      const itemKey = /メガ|ガホ|ホン/.test(name) ? 'megaphone' : /ホイ|イッ|ッス|スル/.test(name) ? 'whistle' : null;
+      if (itemKey && v.item_count) out.push({ ...v.item_count, key: itemKey });
+      return out;
+    },
   },
 ];
 
 let digitWorker = null;
+let textWorker = null;
 
 async function getDigitWorker() {
   if (!window.Tesseract) await loadScript(TESSERACT_URL);
   if (!digitWorker) {
     digitWorker = await window.Tesseract.createWorker('eng', 1);
-    // 数字とカンマ・"pt" だけを、1行の文字として読む
-    await digitWorker.setParameters({ tessedit_char_whitelist: '0123456789,pt', tessedit_pageseg_mode: '7' });
+    // 数字・カンマ・スラッシュ・"pt" だけを、1行の文字として読む
+    await digitWorker.setParameters({ tessedit_char_whitelist: '0123456789,/pt', tessedit_pageseg_mode: '7' });
   }
   return digitWorker;
 }
 
+async function getTextWorker() {
+  if (!window.Tesseract) await loadScript(TESSERACT_URL);
+  if (!textWorker) {
+    textWorker = await window.Tesseract.createWorker('jpn', 1);
+    await textWorker.setParameters({ tessedit_pageseg_mode: '7' });
+  }
+  return textWorker;
+}
+
 function regionRect(layout, r, W, H) {
   const s = H / layout.base.h;
-  const x = (v) => (r.anchor === 'right' ? W - (layout.base.w - v) * s : v * s);
+  const x = (v) => (r.anchor === 'right' ? W - (layout.base.w - v) * s
+    : r.anchor === 'center' ? W / 2 + (v - layout.base.w / 2) * s
+    : v * s);
   return { x: x(r.x0), y: r.y0 * s, w: x(r.x1) - x(r.x0), h: (r.y1 - r.y0) * s };
+}
+
+// 縁取りだけの白抜き文字から、縁に囲まれた白い部分（＝本来の文字の形）だけを取り出す。
+// 外側の白を深さ0とし、縁をまたぐごとに深さを1つ増やして、奇数の深さの白を文字とみなす（「0」の穴などは偶数なので残る）。
+// 縁や影は捨てるので、影で「5」が「8」に見えるような読み間違いが起きにくい。
+function extractOutlinedFill(p, W, H, rad) {
+  const N = W * H;
+  const ink = new Uint8Array(N);
+  for (let i = 0; i < N; i++) ink[i] = p[i * 4] === 0 ? 1 : 0;
+  // 縁の線のかすれ・すき間をふさぐため、少しだけ太らせる
+  const tmp = new Uint8Array(N);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      let v = 0;
+      for (let k = Math.max(0, x - rad); k <= Math.min(W - 1, x + rad) && !v; k++) v = ink[y * W + k];
+      tmp[y * W + x] = v;
+    }
+  }
+  for (let x = 0; x < W; x++) {
+    for (let y = 0; y < H; y++) {
+      let v = 0;
+      for (let k = Math.max(0, y - rad); k <= Math.min(H - 1, y + rad) && !v; k++) v = tmp[k * W + x];
+      ink[y * W + x] = v;
+    }
+  }
+  // つながっている部分ごとに番号を振る（白は上下左右、縁は斜めもつながりとみなす）
+  const comp = new Int32Array(N).fill(-1);
+  const isInk = [];
+  const stack = [];
+  let n = 0;
+  for (let i = 0; i < N; i++) {
+    if (comp[i] >= 0) continue;
+    const t = ink[i];
+    comp[i] = n;
+    isInk.push(t);
+    stack.push(i);
+    while (stack.length) {
+      const j = stack.pop();
+      const x = j % W;
+      const y = (j / W) | 0;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if ((!dx && !dy) || (!t && dx && dy)) continue;
+          const xx = x + dx;
+          const yy = y + dy;
+          if (xx < 0 || yy < 0 || xx >= W || yy >= H) continue;
+          const k = yy * W + xx;
+          if (comp[k] < 0 && ink[k] === t) { comp[k] = n; stack.push(k); }
+        }
+      }
+    }
+    n++;
+  }
+  const adj = Array.from({ length: n }, () => new Set());
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const a = comp[y * W + x];
+      if (x + 1 < W) { const b = comp[y * W + x + 1]; if (a !== b) { adj[a].add(b); adj[b].add(a); } }
+      if (y + 1 < H) { const b = comp[(y + 1) * W + x]; if (a !== b) { adj[a].add(b); adj[b].add(a); } }
+    }
+  }
+  const depth = new Int32Array(n).fill(-1);
+  const queue = [];
+  const seed = (i) => { const c = comp[i]; if (!isInk[c] && depth[c] < 0) { depth[c] = 0; queue.push(c); } };
+  for (let x = 0; x < W; x++) { seed(x); seed((H - 1) * W + x); }
+  for (let y = 0; y < H; y++) { seed(y * W); seed(y * W + W - 1); }
+  for (let qi = 0; qi < queue.length; qi++) {
+    const c = queue[qi];
+    for (const e of adj[c]) {
+      if (!isInk[e]) continue;
+      for (const w of adj[e]) {
+        if (!isInk[w] && depth[w] < 0) { depth[w] = depth[c] + 1; queue.push(w); }
+      }
+    }
+  }
+  for (let i = 0; i < N; i++) {
+    const c = comp[i];
+    const glyph = !isInk[c] && depth[c] % 2 === 1;
+    p[i * 4] = p[i * 4 + 1] = p[i * 4 + 2] = glyph ? 0 : 255;
+  }
 }
 
 // 切り出して拡大し、文字だけ黒・それ以外を白にする（level が上がるほど判定をゆるくする）
@@ -856,13 +972,16 @@ function binarizeRegion(im, rect, ink, level) {
   ctx.drawImage(im, rect.x, rect.y, rect.w, rect.h, 0, 0, c.width, c.height);
   const d = ctx.getImageData(0, 0, c.width, c.height);
   const p = d.data;
-  const [minLight, maxSat, maxDark] = [[200, 40, 110], [175, 70, 130], [150, 100, 150]][level];
+  const [minLight, maxSat, maxDark, maxOutline] = [[200, 40, 110, 150], [175, 70, 130, 175], [150, 100, 150, 200]][level];
   for (let i = 0; i < p.length; i += 4) {
     const mx = Math.max(p[i], p[i + 1], p[i + 2]);
     const mn = Math.min(p[i], p[i + 1], p[i + 2]);
-    const isInk = ink === 'dark' ? mx < maxDark : mn > minLight && mx - mn < maxSat;
+    const isInk = ink === 'light' ? mn > minLight && mx - mn < maxSat
+      : ink === 'outline' ? mx < maxOutline
+      : mx < maxDark;
     p[i] = p[i + 1] = p[i + 2] = isInk ? 0 : 255;
   }
+  if (ink === 'outline') extractOutlinedFill(p, c.width, c.height, Math.max(1, Math.round(k * 0.5)));
   ctx.putImageData(d, 0, 0);
   // 周りに白い余白をつける（文字が端に接していると読みにくい）
   const out = document.createElement('canvas');
@@ -875,15 +994,29 @@ function binarizeRegion(im, rect, ink, level) {
   return out;
 }
 
-async function readRegion(worker, im, rect, r) {
+function parseRegionText(r, text) {
+  if (r.kind === 'fraction') {
+    const m = text.match(/^(\d{1,3})\/(\d{1,2})$/);
+    return m && Number(m[2]) > 0 ? Number(m[1]) : null;
+  }
+  const m = text.match(/^(\d{1,3}(?:,?\d{3})*)(pt)?$/);
+  return m ? Number(m[1].replace(/,/g, '')) : null;
+}
+
+async function readRegion(im, rect, r) {
+  if (r.kind === 'text') {
+    const worker = await getTextWorker();
+    const { data } = await worker.recognize(binarizeRegion(im, rect, r.ink, 0));
+    return { text: data.text.trim(), conf: data.confidence };
+  }
+  const worker = await getDigitWorker();
   let best = null;
   for (let level = 0; level < 3; level++) {
     const { data } = await worker.recognize(binarizeRegion(im, rect, r.ink, level));
     const text = data.text.replace(/\s/g, '');
-    const m = text.match(/^(\d{1,3}(?:,?\d{3})*)(pt)?$/);
-    const cand = { value: m ? Number(m[1].replace(/,/g, '')) : null, text, conf: data.confidence };
-    if (r.suffix && m && !m[2]) cand.conf -= 30; // "pt" が付いていない＝別の画面の可能性
-    if (cand.value !== null && (!best || best.value === null || cand.conf > best.conf)) best = cand;
+    const cand = { value: parseRegionText(r, text), text, conf: data.confidence };
+    if (r.suffix && !text.endsWith(r.suffix)) cand.value = null; // 単位（pt）が無い＝別の画面
+    if (cand.value !== null && (!best || cand.conf > best.conf)) best = cand;
     if (cand.value !== null && cand.conf >= 80) break;
   }
   return best;
@@ -904,24 +1037,23 @@ async function readByLayout(img) {
   const W = im.naturalWidth;
   const H = im.naturalHeight;
   if (W < H * 1.6) return null; // ゲーム画面は横長
-  const worker = await getDigitWorker();
+  const f = img.width / W; // 表示用の縮小画像の座標に直す
   for (const layout of SCREEN_LAYOUTS) {
-    const nums = [];
+    const found = {};
     for (const r of layout.regions) {
       const rect = regionRect(layout, r, W, H);
-      const hit = await readRegion(worker, im, rect, r);
-      if (!hit || hit.conf < 40) continue;
-      const f = img.width / W; // 表示用の縮小画像の座標に直す
-      nums.push({
-        key: r.key,
+      const hit = await readRegion(im, rect, r);
+      if (!hit || (r.kind !== 'text' && (hit.value === null || hit.conf < 40))) continue;
+      found[r.id] = {
+        key: r.id,
         value: hit.value,
         text: hit.text.replace(/pt$/, ''),
         pct: false,
         bbox: { x0: rect.x * f, y0: rect.y * f, x1: (rect.x + rect.w) * f, y1: (rect.y + rect.h) * f },
-      });
+      };
     }
-    // 「累計イベントpt」が読めたらこの画面とみなす
-    if (nums.some((n) => n.key === 'evepoint_now')) return { layout, nums };
+    const nums = layout.resolve(found);
+    if (nums?.length) return { layout, nums };
   }
   return null;
 }
@@ -1041,10 +1173,12 @@ async function readLocally() {
         if (mode !== 'now' && isEventTerm()) {
           mode = 'now';
           applyMode();
-          toast('イベント画面なので「今のイベント」に切り替えました');
+          toast(`${known.layout.name}なので「今のイベント」に切り替えました`);
         }
         known.nums.forEach((n) => {
-          if (mode === 'now' && assign(n.key, n.value)) {
+          // 現在pt・PASS・ホイッスル・メガホンは「今のイベント」のときだけ使う
+          if (PROGRESS_FIELDS.includes(n.key) && mode !== 'now') return;
+          if (assign(n.key, n.value)) {
             n.assigned = n.key;
             autoFilled.add(n.key);
           }
@@ -1096,6 +1230,7 @@ function renderOcrResults(results) {
       b.style.height = `${((n.bbox.y1 - n.bbox.y0) / img.height) * 100}%`;
       b.setAttribute('aria-label', `${n.text} を入力する`);
       if (n.bbox.x0 > img.width / 2) b.classList.add('right'); // ラベルが画面からはみ出さないように
+      if (n.bbox.y0 < img.height * 0.15) b.classList.add('below');
       if (n.assigned) markAssigned(b, n.assigned);
       b.addEventListener('click', () => openSheet(n, b));
       wrap.appendChild(b);
@@ -1104,9 +1239,14 @@ function renderOcrResults(results) {
   });
 }
 
+// 画像の上に出すラベルは短く（となりの枠のラベルと重ならないように）
+const SHORT_LABELS = {
+  evepoint_now: '現在pt', pass_now: 'PASS', whistle: 'ホイッスル', megaphone: 'メガホン', now_bp: 'BP', now_ticket: 'チケット',
+};
+
 function markAssigned(btn, key) {
   btn.classList.add('assigned');
-  btn.dataset.label = LABELS[key];
+  btn.dataset.label = SHORT_LABELS[key] || LABELS[key];
 }
 
 // ---- 項目選択シート ----
