@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>enst-lab 入力アシスト</title>
-  <meta name="description" content="スクショから数値を読み取り、enst-lab のイベントダイヤ計算機（ユニット新曲イベント用）に代わりに入力して計算します。">
+  <meta name="description" content="スクショから数値を読み取り、enst-lab のイベントダイヤ計算機（ユニット新曲・ツアー）に代わりに入力して結果を表示します。">
   <meta name="theme-color" content="#0f0c1d" media="(prefers-color-scheme: dark)">
   <meta name="theme-color" content="#f5f3fb" media="(prefers-color-scheme: light)">
   <meta name="apple-mobile-web-app-capable" content="yes">
@@ -19,7 +19,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@500;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="assist.css">
 </head>
-<body>
+<body data-type="unit">
   <div class="bg" aria-hidden="true"><i></i><i></i><i></i></div>
 
   <!-- 上部バー -->
@@ -37,10 +37,15 @@
         <span id="ringText">0/0</span>
       </div>
     </div>
-    <div class="segmented" role="radiogroup" aria-label="計算モード">
+    <div class="segmented small" data-group="type" role="radiogroup" aria-label="イベントの種類">
       <span class="seg-thumb" aria-hidden="true"></span>
-      <button type="button" data-mode="now" role="radio">今のイベント</button>
-      <button type="button" data-mode="start" role="radio">開始から（次イベ）</button>
+      <button type="button" data-value="unit" role="radio">ユニット新曲</button>
+      <button type="button" data-value="tour" role="radio">ツアー</button>
+    </div>
+    <div class="segmented" data-group="mode" role="radiogroup" aria-label="計算モード">
+      <span class="seg-thumb" aria-hidden="true"></span>
+      <button type="button" data-value="now" role="radio">今のイベント</button>
+      <button type="button" data-value="start" role="radio">開始から（次イベ）</button>
     </div>
   </header>
 
@@ -80,7 +85,10 @@
     <section class="view" id="view-input" data-view="input">
       <form id="form" autocomplete="off" novalidate>
         <div class="goal field">
-          <label for="goal_point" class="eyebrow">目標ポイント</label>
+          <div class="goal-top">
+            <label for="goal_point" class="eyebrow">目標ポイント</label>
+            <button type="button" class="quick" id="quick350">350万にする</button>
+          </div>
           <div class="goal-input">
             <input id="goal_point" name="goal_point" inputmode="numeric" placeholder="350">
             <span>万pt</span>
@@ -112,7 +120,7 @@
           <p class="group-title">応援ホイッスル（ログボ）</p>
           <div class="list">
             <div class="item field stack">
-              <div class="chips wide" data-for="whistle100" data-values="0,100,200" data-labels="配布なし,100個,200個"></div>
+              <div class="chips wide" data-for="whistle100" id="whistle100Chips"></div>
               <input type="hidden" id="whistle100" name="whistle100">
               <small class="note">獲得予定BPに追加。受け取り後は所持ホイッスルへ</small>
             </div>
@@ -121,23 +129,45 @@
 
         <p class="group-title">編成</p>
         <div class="list">
-          <div class="item pair">
-            <span class="pair-head"></span><span class="pair-head">通常曲</span><span class="pair-head">イベ曲</span>
+          <div class="item grid-row head">
+            <span></span>
+            <span class="col-head" data-type="unit">通常曲</span>
+            <span class="col-head" data-type="tour">1〜3曲目</span>
+            <span class="col-head" data-type="tour">4曲目</span>
+            <span class="col-head">イベ曲</span>
           </div>
-          <div class="item pair">
-            <label for="bonus_nomal">特効</label>
-            <div class="val field"><input id="bonus_nomal" name="bonus_nomal" inputmode="numeric" placeholder="0" aria-label="通常曲 特効"><span>%</span></div>
+          <div class="item grid-row">
+            <label for="bonus_event">特効</label>
+            <div class="val field" data-type="unit"><input id="bonus_nomal" name="bonus_nomal" inputmode="numeric" placeholder="0" aria-label="通常曲 特効"><span>%</span></div>
+            <div class="val field" data-type="tour"><input id="tokkou_1_3" name="tokkou_1_3" inputmode="numeric" placeholder="0" aria-label="1〜3曲目 特効"><span>%</span></div>
+            <div class="val field" data-type="tour"><input id="tokkou_4" name="tokkou_4" inputmode="numeric" placeholder="0" aria-label="4曲目 特効"><span>%</span></div>
             <div class="val field"><input id="bonus_event" name="bonus_event" inputmode="numeric" placeholder="0" aria-label="イベ曲 特効"><span>%</span></div>
           </div>
-          <div class="item pair">
-            <label for="nomal_score">スコア</label>
-            <div class="val field"><input id="nomal_score" name="nomal_score" inputmode="numeric" placeholder="300" aria-label="通常曲スコア"><span>万</span></div>
+          <div class="item grid-row">
+            <label for="event_score">スコア</label>
+            <div class="val field" data-type="unit"><input id="nomal_score" name="nomal_score" inputmode="numeric" placeholder="300" aria-label="通常曲スコア"><span>万</span></div>
+            <div class="val field" data-type="tour"><input id="score1_3" name="score1_3" inputmode="numeric" placeholder="300" aria-label="1〜3曲目スコア"><span>万</span></div>
+            <div class="val field" data-type="tour"><input id="score4" name="score4" inputmode="numeric" placeholder="320" aria-label="4曲目スコア"><span>万</span></div>
             <div class="val field"><input id="event_score" name="event_score" inputmode="numeric" placeholder="320" aria-label="イベ曲スコア"><span>万</span></div>
           </div>
-          <div class="item field stack">
+          <div class="item field stack" data-type="unit">
             <label>通常曲の消費BP</label>
             <div class="chips wide" data-for="bp_normal" data-values="1,2,3,6,10"></div>
             <input type="hidden" id="bp_normal" name="bp_normal">
+          </div>
+          <div class="item field stack" data-type="tour">
+            <label>1〜3曲目の消費BP</label>
+            <div class="chips wide" data-for="bp1_3" data-values="3,6,10"></div>
+            <input type="hidden" id="bp1_3" name="bp1_3">
+          </div>
+          <div class="item field stack" data-type="tour">
+            <label>4曲目の消費BP</label>
+            <div class="chips wide" data-for="bp4" data-values="3,6,10"></div>
+            <input type="hidden" id="bp4" name="bp4">
+          </div>
+          <div class="item field" data-type="tour">
+            <label for="fever">4曲目 FEVERボーナス</label>
+            <div class="val"><input id="fever" name="fever" inputmode="numeric" placeholder="100"><span>%</span></div>
           </div>
           <div class="item field stack">
             <label>お仕事</label>
@@ -160,28 +190,47 @@
       </form>
     </section>
 
+    <!-- ===== 結果 ===== -->
+    <section class="view" id="view-result" data-view="result">
+      <div class="empty" id="resultEmpty">
+        <div class="empty-icon" aria-hidden="true">◆</div>
+        <p><b>まだ計算していません</b></p>
+        <p class="note">「入力」タブで数字を入れて「計算する」を押すと、ここに結果が出ます。</p>
+      </div>
+      <div id="resultBody" hidden></div>
+    </section>
+
     <!-- ===== 設定 ===== -->
     <section class="view" id="view-settings" data-view="settings">
       <p class="group-title">プレイヤー（一度入れればOK）</p>
       <div class="list">
         <div class="item field">
           <label for="user_rank">現在のRANK</label>
-          <div class="val"><input id="user_rank" name="user_rank" form="form" inputmode="numeric" placeholder="125"></div>
+          <div class="val"><input id="user_rank" name="user_rank" inputmode="numeric" placeholder="125"></div>
         </div>
         <div class="item field">
           <label for="lost_bp">漏らすBP / 1日</label>
-          <div class="stepper"><button type="button" data-step="-1" data-target="lost_bp" aria-label="減らす">−</button><input id="lost_bp" name="lost_bp" form="form" inputmode="numeric"><button type="button" data-step="1" data-target="lost_bp" aria-label="増やす">＋</button></div>
+          <div class="stepper"><button type="button" data-step="-1" data-target="lost_bp" aria-label="減らす">−</button><input id="lost_bp" name="lost_bp" inputmode="numeric"><button type="button" data-step="1" data-target="lost_bp" aria-label="増やす">＋</button></div>
         </div>
         <div class="item field">
           <label>ソロライブ</label>
           <div class="chips" data-for="sololiveflg" data-values="0,1" data-labels="やらない,やる"></div>
-          <input type="hidden" id="sololiveflg" name="sololiveflg" form="form">
+          <input type="hidden" id="sololiveflg" name="sololiveflg">
         </div>
         <div class="item field stack">
           <label for="office_LV">営業部レベル</label>
-          <select id="office_LV" name="office_LV" form="form"></select>
+          <select id="office_LV" name="office_LV"></select>
         </div>
       </div>
+
+      <p class="group-title">結果をアプリ内に表示（中継サーバー）</p>
+      <div class="list">
+        <div class="item field stack">
+          <label for="proxyUrl">中継サーバーのURL</label>
+          <input id="proxyUrl" type="url" inputmode="url" placeholder="https://enst-proxy.xxxx.workers.dev" autocomplete="off" spellcheck="false">
+        </div>
+      </div>
+      <p class="note pad">enst-lab の結果はブラウザから直接読み取れないため、無料の Cloudflare Workers を中継に使います（作り方は <a href="https://github.com/kage893-hub/enst#結果をアプリ内に表示する中継サーバー" target="_blank" rel="noopener">README</a>）。未設定のときは enst-lab の結果ページを開きます。</p>
 
       <p class="group-title">画像読み取り</p>
       <div class="list">
@@ -214,24 +263,29 @@
 
       <p class="group-title">その他</p>
       <div class="list">
-        <a class="item link" href="https://enst-lab.com/event.php" target="_blank" rel="noopener">enst-lab を直接開く<span>↗</span></a>
+        <a class="item link" id="enstLink" href="https://enst-lab.com/event.php" target="_blank" rel="noopener">enst-lab を直接開く<span>↗</span></a>
         <a class="item link" href="index.html">オフライン簡易計算機<span>›</span></a>
         <button type="button" class="item link danger" id="resetBtn">進捗の入力をリセット<span>↺</span></button>
       </div>
-      <p class="note pad">enst-lab（非公式ファンツール）への入力を代行する自分用ツールです。計算は enst-lab で行われ、結果は enst-lab のページに表示されます。</p>
+      <p class="note pad" id="storageNote">入力した内容はこの端末に保存され、ブラウザを閉じても残ります。</p>
+      <p class="note pad">enst-lab（非公式ファンツール）への入力を代行する自分用ツールです。計算は enst-lab で行われます。</p>
     </section>
   </main>
 
   <!-- 計算ボタン -->
   <div class="cta" id="cta">
     <p class="cta-msg" id="dockMsg"></p>
-    <button type="button" id="goBtn" class="btn grad big">enst-lab で計算する<span aria-hidden="true">↗</span></button>
+    <button type="button" id="goBtn" class="btn grad big">
+      <span class="btn-label">計算する</span>
+      <span class="spinner" aria-hidden="true"></span>
+    </button>
   </div>
 
   <!-- タブバー -->
   <nav class="tabbar" aria-label="画面切り替え">
     <button type="button" data-tab="scan"><svg viewBox="0 0 24 24"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/><circle cx="12" cy="12" r="3"/></svg>スキャン</button>
     <button type="button" data-tab="input"><svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/></svg>入力<i class="badge" id="badge"></i></button>
+    <button type="button" data-tab="result"><svg viewBox="0 0 24 24"><path d="M7 4h10l4 5-9 11L3 9z"/><path d="M3 9h18M12 20 9 9l3-5 3 5z"/></svg>結果<i class="dot" id="resultDot"></i></button>
     <button type="button" data-tab="settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg>設定</button>
   </nav>
 

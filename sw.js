@@ -1,6 +1,6 @@
 // オフラインでも画面を開けるようにするための簡単なキャッシュ
 // 自分のファイルはネットワーク優先（更新をすぐ反映）、つながらないときだけキャッシュを使う
-const CACHE = 'enst-assist-v2';
+const CACHE = 'enst-assist-v3';
 const ASSETS = ['assist.html', 'assist.css', 'assist.js', 'manifest.webmanifest', 'icon.svg', 'icon-180.png', 'icon-192.png'];
 
 self.addEventListener('install', (e) => {

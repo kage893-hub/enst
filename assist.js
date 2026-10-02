@@ -1,16 +1,36 @@
 // enst-lab 入力アシスト
-// 入力内容を enst-lab のイベントダイヤ計算機（ユニット新曲イベント用）へ POST して結果ページを開く。
+// 入力内容を enst-lab のイベントダイヤ計算機（ユニット新曲・ツアー）へ送り、結果を受け取ってアプリ内に表示する。
+// enst-lab は他サイトからの結果の読み取りを許可していないため、結果の受け取りには中継サーバー（Cloudflare Workers）を使う。
 // 画像読み取りは「端末内OCR（Tesseract.js・無料）」が標準。Claude API は任意で使える高精度モード。
 
-const ENST_ACTION = 'https://enst-lab.com/event_result.php';
-// event.php 側の `event_new_next` が false のとき 'sp' が送られる（2026/10 時点）
+// enst-lab の各ページの `event_new_next` / `event_sp_next` から送られる値（2026/10 時点）
 const ENST_EVENT_FLG = 'sp';
+
+const EVENT_TYPES = {
+  unit: {
+    name: 'ユニット新曲',
+    page: 'https://enst-lab.com/event.php',
+    action: 'https://enst-lab.com/event_result.php',
+    whistle100: ['0', '100', '200'],
+    fields: ['bonus_nomal', 'bonus_event', 'nomal_score', 'event_score', 'bp_normal'],
+  },
+  tour: {
+    name: 'ツアー',
+    page: 'https://enst-lab.com/event_sp.php',
+    action: 'https://enst-lab.com/event_sp_result.php',
+    whistle100: ['0', '50', '100'],
+    fields: ['tokkou_1_3', 'tokkou_4', 'bonus_event', 'score1_3', 'score4', 'event_score', 'bp1_3', 'bp4', 'fever'],
+  },
+};
 
 const STORAGE_KEY = 'enst-assist-v1';
 const PREFS_KEY = 'enst-assist-prefs';
+const RESULT_KEY = 'enst-assist-result';
 const API_KEY_KEY = 'enst-assist-apikey';
 const SDK_URL = 'https://cdn.jsdelivr.net/npm/@anthropic-ai/sdk/+esm';
 const TESSERACT_URL = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
+
+const QUICK_GOAL = '350';
 
 // enst-lab の初期値に合わせる
 const DEFAULTS = {
@@ -20,11 +40,21 @@ const DEFAULTS = {
   whistle: '0',
   megaphone: '0',
   whistle100: '0',
+  // ユニット新曲
   bonus_nomal: '0',
-  bonus_event: '0',
   nomal_score: '',
-  event_score: '',
   bp_normal: '10',
+  // ツアー
+  tokkou_1_3: '0',
+  tokkou_4: '0',
+  score1_3: '',
+  score4: '',
+  bp1_3: '10',
+  bp4: '10',
+  fever: '100',
+  // 共通
+  bonus_event: '0',
+  event_score: '',
   work_type: 'event',
   now_bp: '10',
   now_ticket: '8',
@@ -34,7 +64,12 @@ const DEFAULTS = {
   office_LV: 'lv8',
 };
 const FIELDS = Object.keys(DEFAULTS);
+const COMMON_FIELDS = [
+  'goal_point', 'evepoint_now', 'pass_now', 'whistle', 'megaphone', 'whistle100', 'work_type',
+  'now_bp', 'now_ticket', 'lost_bp', 'user_rank', 'sololiveflg', 'office_LV',
+];
 const PROGRESS_FIELDS = ['evepoint_now', 'pass_now', 'whistle', 'megaphone'];
+const SCORE_FIELDS = ['nomal_score', 'event_score', 'score1_3', 'score4'];
 
 const RANGES = { now_bp: [0, 20], now_ticket: [0, 24], lost_bp: [0, 30], megaphone: [0, 3] };
 
@@ -47,8 +82,13 @@ const LABELS = {
   now_bp: '現在BP',
   now_ticket: 'お仕事チケット',
   bonus_nomal: '通常曲 特効%',
-  bonus_event: 'イベ曲 特効%',
   nomal_score: '通常曲スコア',
+  tokkou_1_3: '1〜3曲目 特効%',
+  tokkou_4: '4曲目 特効%',
+  score1_3: '1〜3曲目スコア',
+  score4: '4曲目スコア',
+  fever: 'FEVERボーナス%',
+  bonus_event: 'イベ曲 特効%',
   event_score: 'イベ曲スコア',
   user_rank: 'RANK',
 };
@@ -72,8 +112,8 @@ const OFFICE_LEVELS = [
 const $ = (id) => document.getElementById(id);
 const haptic = () => navigator.vibrate?.(8);
 
-// ---- イベント期間（enst-lab の判定ロジックと同じ） ----
-// ユニット新曲イベントは 月末15:00〜8日21:59 / 15日15:00〜23日21:59
+// ---- イベント期間（enst-lab の判定ロジックと同じ。ユニット新曲・ツアー共通） ----
+// 月末15:00〜8日21:59 / 15日15:00〜23日21:59
 function isStartDay(d) {
   const day = d.getDate();
   const lastDay = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
@@ -104,9 +144,12 @@ function eventKey(d = new Date()) {
 }
 
 // ---- 状態 ----
-let mode = 'now'; // 'now' | 'start'
-let images = [];  // { name, mediaType, data(base64), url, width, height }
-let prefs = { tab: 'input', engine: 'local', model: 'claude-opus-5-5' };
+let mode = 'now';        // 'now' | 'start'
+let eventType = 'unit';  // 'unit' | 'tour'
+let images = [];         // { name, mediaType, data(base64), url, width, height }
+let prefs = { tab: 'input', engine: 'local', model: 'claude-opus-5-5', proxy: '' };
+
+const type = () => EVENT_TYPES[eventType];
 
 function storage(fn) {
   try { return fn(); } catch (_) { return null; }
@@ -132,7 +175,7 @@ function setValue(key, value) {
 }
 
 function save() {
-  const data = { values: getValues(), eventKey: eventKey(), mode };
+  const data = { values: getValues(), eventKey: eventKey(), mode, eventType };
   storage(() => localStorage.setItem(STORAGE_KEY, JSON.stringify(data)));
 }
 
@@ -144,8 +187,11 @@ function load() {
   const saved = storage(() => JSON.parse(localStorage.getItem(STORAGE_KEY))) || {};
   const values = { ...DEFAULTS, ...(saved.values || {}) };
 
-  // イベントが変わっていたら進捗系はリセット（目標や自分用設定は残す）
+  // イベントが変わっていたら進捗系はリセット（目標や編成・自分用設定は残す）
   if (saved.eventKey && saved.eventKey !== eventKey()) resetProgress(values);
+
+  eventType = EVENT_TYPES[saved.eventType] ? saved.eventType : 'unit';
+  buildWhistleChips();
   FIELDS.forEach((k) => setValue(k, values[k]));
 
   mode = isEventTerm() ? (saved.eventKey === eventKey() && saved.mode) || 'now' : 'start';
@@ -154,6 +200,7 @@ function load() {
   $('apiKey').value = storage(() => localStorage.getItem(API_KEY_KEY)) || '';
   $('model').value = prefs.model;
   $('engine').value = prefs.engine;
+  $('proxyUrl').value = prefs.proxy || '';
 }
 
 function resetProgress(values) {
@@ -168,25 +215,51 @@ function ticketMax(office) {
   return (OFFICE_LEVELS.find(([v]) => v === office) || [, , 8])[2];
 }
 
+// ブラウザの保存領域を「消さないで」と頼む（対応ブラウザのみ）
+async function requestPersistentStorage() {
+  if (!navigator.storage?.persist) return;
+  const already = await navigator.storage.persisted().catch(() => false);
+  const ok = already || await navigator.storage.persist().catch(() => false);
+  const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
+  if (!ok && !standalone) {
+    $('storageNote').textContent = '入力した内容はこの端末に保存され、ブラウザを閉じても残ります。'
+      + 'iPhone では長期間開かないと消えることがあるので、ホーム画面に追加して使うのがおすすめです。';
+  }
+}
+
 // ---- UI 部品 ----
-function buildChips() {
-  document.querySelectorAll('.chips').forEach((box) => {
-    const key = box.dataset.for;
-    const values = box.dataset.values.split(',');
-    const labels = box.dataset.labels ? box.dataset.labels.split(',') : values;
-    values.forEach((val, i) => {
-      const b = document.createElement('button');
-      b.type = 'button';
-      b.textContent = labels[i];
-      b.dataset.value = val;
-      b.addEventListener('click', () => {
-        haptic();
-        setValue(key, val);
-        onChange();
-      });
-      box.appendChild(b);
+function makeChips(box) {
+  const key = box.dataset.for;
+  const values = box.dataset.values.split(',');
+  const labels = box.dataset.labels ? box.dataset.labels.split(',') : values;
+  box.innerHTML = '';
+  values.forEach((val, i) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = labels[i];
+    b.dataset.value = val;
+    b.addEventListener('click', () => {
+      haptic();
+      setValue(key, val);
+      onChange();
     });
+    box.appendChild(b);
   });
+}
+
+function buildChips() {
+  document.querySelectorAll('.chips[data-values]').forEach(makeChips);
+}
+
+// ログボホイッスルの選択肢はイベントの種類で違う（新曲 100/200、ツアー 50/100）
+function buildWhistleChips() {
+  const box = $('whistle100Chips');
+  const values = type().whistle100;
+  box.dataset.values = values.join(',');
+  box.dataset.labels = values.map((v) => (v === '0' ? '配布なし' : `${v}個`)).join(',');
+  makeChips(box);
+  if (!values.includes($('whistle100').value)) $('whistle100').value = '0';
+  syncChips('whistle100');
 }
 
 function syncChips(key) {
@@ -255,19 +328,27 @@ function setTab(tab) {
   const showCta = tab === 'input';
   $('cta').classList.toggle('hide', !showCta);
   document.body.classList.toggle('has-cta', showCta);
+  if (tab === 'result') $('resultDot').classList.remove('on');
   window.scrollTo({ top: 0 });
+}
+
+function syncSegmented(group, value, disabled = () => false) {
+  const seg = document.querySelector(`.segmented[data-group="${group}"]`);
+  seg.dataset.value = value;
+  seg.querySelectorAll('button').forEach((b, i) => {
+    const on = b.dataset.value === value;
+    b.classList.toggle('on', on);
+    b.setAttribute('aria-checked', on);
+    b.disabled = disabled(b.dataset.value);
+    if (on) seg.style.setProperty('--seg-index', i);
+  });
 }
 
 function applyMode() {
   const term = isEventTerm();
-  const seg = document.querySelector('.segmented');
-  seg.dataset.mode = mode;
-  seg.querySelectorAll('button').forEach((b) => {
-    const on = b.dataset.mode === mode;
-    b.classList.toggle('on', on);
-    b.setAttribute('aria-checked', on);
-    b.disabled = b.dataset.mode === 'now' && !term;
-  });
+  document.body.dataset.type = eventType;
+  syncSegmented('type', eventType);
+  syncSegmented('mode', mode, (v) => v === 'now' && !term);
   document.querySelectorAll('[data-show="now"]').forEach((el) => { el.hidden = mode !== 'now'; });
 
   // ログボホイッスルは「開始から」か、イベ初日のみ
@@ -275,38 +356,52 @@ function applyMode() {
 
   $('bpLabel').textContent = mode === 'now' ? '現在残りBP' : 'イベ開始時BP';
   $('ticketLabel').textContent = mode === 'now' ? '残りお仕事チケット' : '開始時お仕事チケット';
-  $('termText').textContent = term ? 'イベント開催中' : 'イベント期間外（開始からで計算）';
+  $('termText').textContent = `${type().name}イベント ・ ${term ? '開催中' : '期間外（開始からで計算）'}`;
+  $('enstLink').href = type().page;
+  $('quick350').classList.toggle('on', $('goal_point').value === QUICK_GOAL);
 }
 
 // ---- 入力チェック（enst-lab のフォーム制約に合わせる） ----
 function validate(v) {
   const errors = [];
   const need = (key, ok, msg) => { if (!ok) errors.push([key, msg]); };
-  const int = (s) => /^\d+$/.test(s);
-  const pos = (s) => /^[1-9]\d*$/.test(s);
+  const int = (s, len) => /^\d+$/.test(s) && s.length <= len;
+  const pos = (s, len) => /^[1-9]\d*$/.test(s) && s.length <= len;
 
-  need('goal_point', pos(v.goal_point) && v.goal_point.length <= 5, '目標ポイント（万pt）を入れてください');
-  need('bonus_nomal', int(v.bonus_nomal) && v.bonus_nomal.length <= 3, '通常曲の特効（%）を入れてください');
-  need('bonus_event', int(v.bonus_event) && v.bonus_event.length <= 3, 'イベ曲の特効（%）を入れてください');
-  need('nomal_score', pos(v.nomal_score) && v.nomal_score.length <= 3, '通常曲スコア（万）を入れてください');
-  need('event_score', pos(v.event_score) && v.event_score.length <= 3, 'イベ曲スコア（万）を入れてください');
-  if (mode === 'now') {
-    need('evepoint_now', int(v.evepoint_now) && v.evepoint_now.length <= 9, '現在のイベントptを入れてください');
-    need('pass_now', int(v.pass_now) && v.pass_now.length <= 6, '所持PASSを入れてください（なければ0）');
-    need('whistle', v.whistle === '' || (int(v.whistle) && v.whistle.length <= 3), '所持ホイッスルは数字で入れてください');
+  need('goal_point', pos(v.goal_point, 5), '目標ポイント（万pt）を入れてください');
+  if (eventType === 'unit') {
+    need('bonus_nomal', int(v.bonus_nomal, 3), '通常曲の特効（%）を入れてください');
+    need('bonus_event', int(v.bonus_event, 3), 'イベ曲の特効（%）を入れてください');
+    need('nomal_score', pos(v.nomal_score, 3), '通常曲スコア（万）を入れてください');
+    need('event_score', pos(v.event_score, 3), 'イベ曲スコア（万）を入れてください');
+  } else {
+    need('tokkou_1_3', int(v.tokkou_1_3, 3), '1〜3曲目の特効（%）を入れてください');
+    need('tokkou_4', int(v.tokkou_4, 3), '4曲目の特効（%）を入れてください');
+    need('bonus_event', int(v.bonus_event, 3), 'イベ曲の特効（%）を入れてください');
+    need('score1_3', pos(v.score1_3, 3), '1〜3曲目のスコア（万）を入れてください');
+    need('score4', pos(v.score4, 3), '4曲目のスコア（万）を入れてください');
+    need('event_score', pos(v.event_score, 3), 'イベ曲スコア（万）を入れてください');
+    need('fever', pos(v.fever, 3), 'FEVERボーナス（%）を入れてください');
   }
-  need('user_rank', v.user_rank === '' || (pos(v.user_rank) && v.user_rank.length <= 4), 'RANKは数字で入れてください');
+  if (mode === 'now') {
+    need('evepoint_now', int(v.evepoint_now, 9), '現在のイベントptを入れてください');
+    need('pass_now', int(v.pass_now, 6), '所持PASSを入れてください（なければ0）');
+    need('whistle', v.whistle === '' || int(v.whistle, 3), '所持ホイッスルは数字で入れてください');
+  }
+  need('user_rank', v.user_rank === '' || pos(v.user_rank, 4), 'RANKは数字で入れてください');
   return errors;
 }
 
 // 進み具合リングに数える必須項目
 function requiredKeys() {
-  const keys = ['goal_point', 'bonus_nomal', 'bonus_event', 'nomal_score', 'event_score'];
+  const keys = ['goal_point', ...type().fields.filter((k) => !/^bp/.test(k))];
   return mode === 'now' ? [...keys, 'evepoint_now', 'pass_now'] : keys;
 }
 
+// enst-lab に送る内容（そのイベントの種類で使う項目だけ）
 function buildPayload(v) {
-  const p = { ...v };
+  const p = {};
+  [...COMMON_FIELDS, ...type().fields].forEach((k) => { p[k] = v[k]; });
   p.calc_time = mode === 'now' || !isEventTerm() ? '0' : '1';
   if (mode === 'start') {
     p.evepoint_now = '';
@@ -352,30 +447,19 @@ function updateStatus() {
   $('ring').setAttribute('aria-label', `必須 ${req.length} 項目中 ${done} 項目入力済み`);
   $('badge').textContent = errors.length ? String(errors.length) : '';
 
-  $('dockMsg').textContent = errors.length ? `あと ${errors.length} 項目 ・ ${errors[0][1]}` : '準備OK！';
+  $('dockMsg').textContent = errors.length
+    ? `あと ${errors.length} 項目 ・ ${errors[0][1]}`
+    : `準備OK！ ${type().name}イベントで計算します`;
   $('dockMsg').classList.toggle('ok', !errors.length);
 }
 
-function submit() {
-  const v = getValues();
-  const errors = validate(v);
-  if (errors.length) {
-    errors.forEach(([key]) => $(key).closest('.field')?.classList.add('error'));
-    const first = $(errors[0][0]);
-    const view = first.closest('.view');
-    if (view && !view.classList.contains('active')) setTab(view.dataset.view);
-    first.closest('.field').scrollIntoView({ behavior: 'smooth', block: 'center' });
-    if (first.type !== 'hidden') first.focus({ preventScroll: true });
-    navigator.vibrate?.([20, 40, 20]);
-    toast(errors[0][1]);
-    return;
-  }
-  haptic();
+// ---- 計算 ----
+function openInEnstLab(payload, eventTypeKey = eventType) {
   const form = document.createElement('form');
   form.method = 'POST';
-  form.action = ENST_ACTION;
+  form.action = EVENT_TYPES[eventTypeKey].action;
   form.target = '_blank';
-  Object.entries(buildPayload(v)).forEach(([name, value]) => {
+  Object.entries(payload).forEach(([name, value]) => {
     const input = document.createElement('input');
     input.type = 'hidden';
     input.name = name;
@@ -387,16 +471,240 @@ function submit() {
   form.remove();
 }
 
+function showErrors(errors) {
+  errors.forEach(([key]) => $(key).closest('.field')?.classList.add('error'));
+  const first = $(errors[0][0]);
+  const view = first.closest('.view');
+  if (view && !view.classList.contains('active')) setTab(view.dataset.view);
+  first.closest('.field').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  if (first.type !== 'hidden') first.focus({ preventScroll: true });
+  navigator.vibrate?.([20, 40, 20]);
+  toast(errors[0][1]);
+}
+
+async function calculate() {
+  const v = getValues();
+  const errors = validate(v);
+  if (errors.length) {
+    showErrors(errors);
+    return;
+  }
+  haptic();
+  const payload = buildPayload(v);
+  const proxy = (prefs.proxy || '').trim();
+  if (!proxy) {
+    openInEnstLab(payload);
+    toast('結果をアプリ内に出すには、設定で中継サーバーを登録してください', 4000);
+    return;
+  }
+
+  const btn = $('goBtn');
+  btn.disabled = true;
+  btn.classList.add('loading');
+  try {
+    const url = new URL(proxy);
+    url.searchParams.set('type', eventType);
+    const res = await fetch(url, { method: 'POST', body: new URLSearchParams(payload) });
+    if (!res.ok) throw new Error(`中継サーバーがエラーを返しました（${res.status}）`);
+    const parsed = parseResult(await res.text());
+    const result = {
+      ...parsed,
+      eventType,
+      mode,
+      goal: v.goal_point,
+      at: Date.now(),
+      payload,
+    };
+    storage(() => localStorage.setItem(RESULT_KEY, JSON.stringify(result)));
+    renderResult(result);
+    setTab('result');
+    navigator.vibrate?.([10, 30, 10]);
+  } catch (err) {
+    console.error(err);
+    const msg = err instanceof TypeError
+      ? '中継サーバーにつながりませんでした。設定のURLと通信を確認してください'
+      : err?.message || String(err);
+    renderResultError(msg, payload);
+    setTab('result');
+  } finally {
+    btn.disabled = false;
+    btn.classList.remove('loading');
+  }
+}
+
+// enst-lab の結果ページ（HTML）から数値を取り出す
+function cellLines(el) {
+  const c = el.cloneNode(true);
+  // スマホ用の改行（mobile-br）は単語の途中なので詰める
+  c.querySelectorAll('br').forEach((br) => br.replaceWith(br.classList.contains('mobile-br') ? '' : '\n'));
+  return c.textContent.split('\n').map((s) => s.replace(/\s+/g, ' ').trim()).filter(Boolean);
+}
+
+function parseResult(html) {
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  const rows = (sel) => [...doc.querySelectorAll(`${sel} tr`)].map((tr) => {
+    const th = tr.querySelector('th');
+    const td = tr.querySelector('td');
+    if (!th || !td) return null;
+    const [label, ...sub] = cellLines(th);
+    const [value, ...note] = cellLines(td);
+    // 値が入っていない行（"pt" だけ等）は除く
+    if (!label || !value || !/\d/.test(value)) return null;
+    return { label, sub: sub.join(' '), value, note: note.join(' ') };
+  }).filter(Boolean);
+
+  const summary = rows('tbody.member2');
+  const detail = rows('tbody.member3');
+  if (!summary.length) {
+    const text = doc.body?.textContent || '';
+    if (text.includes('再計算')) {
+      throw new Error('enst-lab で計算できませんでした。「今のイベント」は開催中のイベントの種類でしか計算できません。'
+        + 'イベントの種類が合っているか確認するか、「開始から」で計算してください。');
+    }
+    throw new Error('結果を読み取れませんでした。enst-lab のページの形が変わった可能性があります。');
+  }
+  const head = doc.querySelector('.text-center.mb-3 .f-15');
+  const current = doc.getElementById('score_result');
+  return {
+    when: head ? cellLines(head).join(' ') : '',
+    current: current ? cellLines(current).join(' ') : '',
+    summary,
+    detail,
+  };
+}
+
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+
+function formatAt(ms) {
+  const d = new Date(ms);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getMonth() + 1}/${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function renderResult(r) {
+  const body = $('resultBody');
+  body.innerHTML = '';
+  $('resultEmpty').hidden = true;
+  body.hidden = false;
+
+  const find = (re) => r.summary.find((row) => re.test(row.label));
+  const dia = find(/必要ダイヤ/);
+  const remain = find(/目標ptまであと/);
+  const progress = Number((remain?.note.match(/([\d.]+)\s*%/) || [])[1]);
+
+  const meta = el('p', 'result-meta', `${EVENT_TYPES[r.eventType]?.name || ''}イベント ・ 目標 ${Number(r.goal).toLocaleString('ja-JP')}万pt ・ ${formatAt(r.at)} 計算`);
+  body.appendChild(meta);
+
+  // メイン：必要ダイヤ
+  const hero = el('div', 'result-hero');
+  hero.appendChild(el('p', 'eyebrow', '必要ダイヤ'));
+  const big = el('p', 'result-big');
+  const n = (dia?.value || '').match(/[\d,]+/);
+  big.append(el('span', '', n ? n[0] : (dia?.value || '—')), el('small', '', '個'));
+  hero.appendChild(big);
+  if (remain) {
+    hero.appendChild(el('p', 'result-sub', `目標まであと ${remain.value}`));
+    if (Number.isFinite(progress)) {
+      const bar = el('div', 'bar');
+      const fill = el('i');
+      fill.style.width = `${Math.min(100, progress)}%`;
+      bar.appendChild(fill);
+      hero.append(bar, el('p', 'result-sub small', `進捗 ${progress}%`));
+    }
+  }
+  body.appendChild(hero);
+
+  // 現在pt
+  if (r.current) {
+    const now = el('div', 'result-now');
+    now.append(el('span', 'eyebrow', r.when ? `現在到達ポイント（${r.when}）` : '現在到達ポイント'), el('b', '', r.current));
+    body.appendChild(now);
+  }
+
+  // そのほかの主要な数値
+  const tiles = el('div', 'tiles');
+  r.summary.filter((row) => row !== dia && row !== remain).forEach((row) => {
+    const t = el('div', 'tile');
+    t.append(el('span', 'tile-label', row.label), el('b', 'tile-value', row.value));
+    const sub = [row.sub, row.note].filter(Boolean).join(' ');
+    if (sub) t.appendChild(el('span', 'tile-sub', sub));
+    tiles.appendChild(t);
+  });
+  body.appendChild(tiles);
+
+  // 詳細
+  if (r.detail.length) {
+    const det = el('details', 'list result-detail');
+    const sum = el('summary', 'item');
+    sum.append(el('span', '', '詳細情報'), el('span', 'chev', '›'));
+    det.appendChild(sum);
+    r.detail.forEach((row) => {
+      const item = el('div', 'item');
+      const left = el('span', 'detail-label', row.label);
+      if (row.sub) left.appendChild(el('small', '', row.sub));
+      item.append(left, el('b', 'detail-value', [row.value, row.note].filter(Boolean).join(' ')));
+      det.appendChild(item);
+    });
+    body.appendChild(det);
+  }
+
+  const actions = el('div', 'result-actions');
+  const open = el('button', 'btn ghost', 'enst-lab の結果ページで見る ↗');
+  open.type = 'button';
+  open.addEventListener('click', () => openInEnstLab(r.payload, r.eventType));
+  const back = el('button', 'btn ghost', '入力を直して再計算');
+  back.type = 'button';
+  back.addEventListener('click', () => setTab('input'));
+  actions.append(back, open);
+  body.appendChild(actions);
+
+  $('resultDot').classList.add('on');
+}
+
+function renderResultError(message, payload) {
+  const body = $('resultBody');
+  body.innerHTML = '';
+  $('resultEmpty').hidden = true;
+  body.hidden = false;
+  const box = el('div', 'result-error');
+  box.append(el('p', 'eyebrow', '計算できませんでした'), el('p', '', message));
+  const open = el('button', 'btn grad', 'enst-lab の結果ページで見る ↗');
+  open.type = 'button';
+  open.addEventListener('click', () => openInEnstLab(payload));
+  const back = el('button', 'btn ghost', '入力に戻る');
+  back.type = 'button';
+  back.addEventListener('click', () => setTab('input'));
+  box.append(open, back);
+  body.appendChild(box);
+}
+
+function loadLastResult() {
+  const r = storage(() => JSON.parse(localStorage.getItem(RESULT_KEY)));
+  if (r?.summary?.length) renderResult(r);
+  $('resultDot').classList.remove('on');
+}
+
 // 読み取った数値をフィールドに入れる（単位変換・範囲調整つき）
 function assign(key, n) {
   if (n === null || n === undefined || !Number.isFinite(n) || n < 0) return false;
   let v = Math.floor(n);
-  if (key === 'nomal_score' || key === 'event_score') v = v >= 10000 ? Math.floor(v / 10000) : v; // 万単位
+  if (SCORE_FIELDS.includes(key)) v = v >= 10000 ? Math.floor(v / 10000) : v; // 万単位
   if (key === 'goal_point') v = v >= 100000 ? Math.floor(v / 10000) : v; // 万単位
   if (RANGES[key]) v = clamp(key, v);
   setValue(key, String(v));
   flash(key);
   return true;
+}
+
+// 今のイベントの種類で読み取り対象になる項目
+function scanKeys() {
+  const keys = ['now_bp', 'now_ticket', 'user_rank', ...type().fields.filter((k) => !/^bp/.test(k))];
+  return mode === 'now' ? [...PROGRESS_FIELDS, ...keys] : keys;
 }
 
 // ---- 画像 ----
@@ -436,9 +744,9 @@ function renderThumbs() {
   images.forEach((img, i) => {
     const wrap = document.createElement('div');
     wrap.className = 'thumb';
-    const el = document.createElement('img');
-    el.src = img.url;
-    el.alt = img.name;
+    const im = document.createElement('img');
+    im.src = img.url;
+    im.alt = img.name;
     const del = document.createElement('button');
     del.type = 'button';
     del.textContent = '×';
@@ -447,7 +755,7 @@ function renderThumbs() {
       images.splice(i, 1);
       renderThumbs();
     });
-    wrap.append(el, del);
+    wrap.append(im, del);
     box.appendChild(wrap);
   });
   $('readBtn').disabled = !images.length;
@@ -455,9 +763,9 @@ function renderThumbs() {
 }
 
 function setStatus(text, cls = '') {
-  const el = $('ocrStatus');
-  el.textContent = text;
-  el.className = `status ${cls}`;
+  const s = $('ocrStatus');
+  s.textContent = text;
+  s.className = `status ${cls}`;
 }
 
 async function readImages() {
@@ -499,14 +807,14 @@ async function getWorker() {
 // 文字を読みやすくするため、グレースケール＋コントラスト強調した画像を作る
 function preprocess(img) {
   return new Promise((resolve, reject) => {
-    const el = new Image();
-    el.onload = () => {
-      const scale = Math.max(1, 1400 / el.width);
+    const im = new Image();
+    im.onload = () => {
+      const scale = Math.max(1, 1400 / im.width);
       const canvas = document.createElement('canvas');
-      canvas.width = Math.round(el.width * scale);
-      canvas.height = Math.round(el.height * scale);
+      canvas.width = Math.round(im.width * scale);
+      canvas.height = Math.round(im.height * scale);
       const ctx = canvas.getContext('2d');
-      ctx.drawImage(el, 0, 0, canvas.width, canvas.height);
+      ctx.drawImage(im, 0, 0, canvas.width, canvas.height);
       const d = ctx.getImageData(0, 0, canvas.width, canvas.height);
       const p = d.data;
       for (let i = 0; i < p.length; i += 4) {
@@ -517,8 +825,8 @@ function preprocess(img) {
       ctx.putImageData(d, 0, 0);
       resolve({ canvas, scale });
     };
-    el.onerror = reject;
-    el.src = img.url;
+    im.onerror = reject;
+    im.src = img.url;
   });
 }
 
@@ -569,6 +877,7 @@ const AUTO_RULES = [
   { key: 'evepoint_now', re: /イベント?(pt|ポイント)|累計/i, now: true, min: 100 },
   { key: 'user_rank', re: /RANK|ランク/i },
   { key: 'now_ticket', re: /チケット/ },
+  { key: 'fever', re: /FEVER|フィーバー/i, type: 'tour' },
 ];
 
 function autoAssign(lines) {
@@ -576,8 +885,9 @@ function autoAssign(lines) {
   lines.forEach((line, i) => {
     const text = toHalf(line.text.replace(/\s/g, ''));
     for (const rule of AUTO_RULES) {
-      if (done.has(rule.key) || (rule.now && mode !== 'now') || !rule.re.test(text)) continue;
-      const pick = (nums) => nums.find((n) => !n.pct && n.value >= (rule.min || 0));
+      if (done.has(rule.key) || (rule.now && mode !== 'now') || (rule.type && rule.type !== eventType)) continue;
+      if (!rule.re.test(text)) continue;
+      const pick = (nums) => nums.find((n) => n.value >= (rule.min || 0) && (rule.key === 'fever' || !n.pct));
       const hit = pick(line.nums) || pick(lines[i + 1]?.nums || []);
       if (hit && assign(rule.key, hit.value)) {
         done.add(rule.key);
@@ -630,10 +940,10 @@ function renderOcrResults(results) {
     if (!nums.length) return;
     const wrap = document.createElement('div');
     wrap.className = 'ocr-image';
-    const el = document.createElement('img');
-    el.src = img.url;
-    el.alt = img.name;
-    wrap.appendChild(el);
+    const im = document.createElement('img');
+    im.src = img.url;
+    im.alt = img.name;
+    wrap.appendChild(im);
     nums.forEach((n) => {
       const b = document.createElement('button');
       b.type = 'button';
@@ -657,28 +967,23 @@ function markAssigned(btn, key) {
 }
 
 // ---- 項目選択シート ----
-let sheetTarget = null;
-
 function openSheet(num, btn) {
   haptic();
-  sheetTarget = { num, btn };
   $('sheetValue').textContent = num.text;
   const list = $('sheetList');
   list.innerHTML = '';
-  Object.entries(LABELS).forEach(([key, label]) => {
-    if (PROGRESS_FIELDS.includes(key) && mode !== 'now') return;
-    if (num.pct && !key.startsWith('bonus')) return;
+  ['goal_point', ...scanKeys()].forEach((key) => {
+    const isPct = /bonus|tokkou|fever/.test(key);
+    if (num.pct && !isPct) return;
     const b = document.createElement('button');
     b.type = 'button';
     b.className = 'sheet-item';
-    b.innerHTML = `<span></span><b></b>`;
-    b.querySelector('span').textContent = label;
-    b.querySelector('b').textContent = $(key).value || '—';
+    b.append(el('span', '', LABELS[key]), el('b', '', $(key).value || '—'));
     b.addEventListener('click', () => {
       if (assign(key, num.value)) {
         markAssigned(btn, key);
         onChange();
-        toast(`${label} に ${$(key).value} を入れました`);
+        toast(`${LABELS[key]} に ${$(key).value} を入れました`);
       }
       closeSheet();
     });
@@ -691,40 +996,41 @@ function openSheet(num, btn) {
 function closeSheet() {
   $('sheet').classList.remove('open');
   $('sheet').setAttribute('aria-hidden', 'true');
-  sheetTarget = null;
 }
 
 // ==== Claude API（任意・高精度） ====
-const NUM = (description) => ({ type: ['integer', 'null'], description });
-const EXTRACT_SCHEMA = {
-  type: 'object',
-  properties: {
-    evepoint_now: NUM('現在のイベントポイント（累計pt）'),
-    pass_now: NUM('所持しているイベントPASSの枚数'),
-    whistle: NUM('所持している応援ホイッスルの個数'),
-    megaphone: NUM('所持しているメガホンの個数'),
-    now_bp: NUM('現在のBP（ライブに使うポイント）。「8/10」のような表示なら左側の数'),
-    now_ticket: NUM('現在のお仕事チケット枚数。「5/8」のような表示なら左側の数'),
-    user_rank: NUM('プレイヤーRANK'),
-    bonus_nomal: NUM('通常曲で使う編成のイベント特効ボーナス（%の数字だけ）'),
-    bonus_event: NUM('イベント曲で使う編成のイベント特効ボーナス（%の数字だけ）'),
-    nomal_score: NUM('通常曲のライブスコア（画面に出ている数値そのまま、例: 3123456）'),
-    event_score: NUM('イベント曲のライブスコア（画面に出ている数値そのまま）'),
-    notes: { type: 'string', description: '読み取れなかったもの・自信がないものの短いメモ（日本語）' },
-  },
-  required: [
-    'evepoint_now', 'pass_now', 'whistle', 'megaphone', 'now_bp', 'now_ticket', 'user_rank',
-    'bonus_nomal', 'bonus_event', 'nomal_score', 'event_score', 'notes',
-  ],
-  additionalProperties: false,
+const SCAN_DESCRIPTIONS = {
+  evepoint_now: '現在のイベントポイント（累計pt）',
+  pass_now: '所持しているイベントPASSの枚数',
+  whistle: '所持している応援ホイッスルの個数',
+  megaphone: '所持しているメガホンの個数',
+  now_bp: '現在のBP（ライブに使うポイント）。「8/10」のような表示なら左側の数',
+  now_ticket: '現在のお仕事チケット枚数。「5/8」のような表示なら左側の数',
+  user_rank: 'プレイヤーRANK',
+  bonus_nomal: '通常曲で使う編成のイベント特効ボーナス（%の数字だけ）',
+  nomal_score: '通常曲のライブスコア（画面に出ている数値そのまま、例: 3123456）',
+  tokkou_1_3: 'ツアーの1〜3曲目で使う編成のイベント特効ボーナス（%の数字だけ）',
+  tokkou_4: 'ツアーの4曲目で使う編成のイベント特効ボーナス（%の数字だけ）',
+  score1_3: 'ツアーの1〜3曲目のライブスコア（画面に出ている数値そのまま）',
+  score4: 'ツアーの4曲目のライブスコア（画面に出ている数値そのまま）',
+  fever: 'ツアー4曲目のFEVERボーナス（%の数字だけ）',
+  bonus_event: 'イベント曲で使う編成のイベント特効ボーナス（%の数字だけ）',
+  event_score: 'イベント曲のライブスコア（画面に出ている数値そのまま）',
 };
 
-const EXTRACT_PROMPT = `これは「あんさんぶるスターズ!!Music」のゲーム画面のスクリーンショットです。
+function extractSchema(keys) {
+  const properties = {};
+  keys.forEach((k) => { properties[k] = { type: ['integer', 'null'], description: SCAN_DESCRIPTIONS[k] }; });
+  properties.notes = { type: 'string', description: '読み取れなかったもの・自信がないものの短いメモ（日本語）' };
+  return { type: 'object', properties, required: [...keys, 'notes'], additionalProperties: false };
+}
+
+const extractPrompt = () => `これは「あんさんぶるスターズ!!Music」の${type().name}イベント中のゲーム画面のスクリーンショットです。
 イベントダイヤ計算機に入力するための数値を読み取ってください。
 
 - 画面にはっきり表示されている数値だけを入れ、見えないもの・推測になるものは null にしてください。
 - 数値はカンマを除いた整数にしてください。
-- 特効ボーナスやスコアが「通常曲」用か「イベント曲」用か画面から判別できない場合は、両方に同じ値を入れず、どちらか分かる方だけ入れて notes に書いてください。
+- 特効ボーナスやスコアがどの曲（${eventType === 'tour' ? '1〜3曲目／4曲目／イベント曲' : '通常曲／イベント曲'}）用か画面から判別できない場合は、推測で入れず null にして notes に書いてください。
 - 複数の画像がある場合は、すべての画像の情報をまとめてください。`;
 
 let sdkPromise = null;
@@ -742,6 +1048,7 @@ async function readWithClaude() {
     return;
   }
   const model = prefs.model;
+  const keys = scanKeys();
   setStatus('Claude が読み取り中…（10〜30秒ほど）', 'busy');
 
   try {
@@ -752,13 +1059,13 @@ async function readWithClaude() {
         type: 'image',
         source: { type: 'base64', media_type: img.mediaType, data: img.data },
       })),
-      { type: 'text', text: EXTRACT_PROMPT },
+      { type: 'text', text: extractPrompt() },
     ];
     const params = {
       model,
       max_tokens: 16000,
       messages: [{ role: 'user', content }],
-      output_config: { format: { type: 'json_schema', schema: EXTRACT_SCHEMA } },
+      output_config: { format: { type: 'json_schema', schema: extractSchema(keys) } },
     };
 
     let response;
@@ -778,7 +1085,7 @@ async function readWithClaude() {
     if (response.stop_reason === 'max_tokens') throw new Error('応答が途中で切れました。画像を減らして試してください');
     const text = response.content.find((b) => b.type === 'text')?.text;
     if (!text) throw new Error('読み取り結果が空でした');
-    applyExtracted(JSON.parse(text));
+    applyExtracted(JSON.parse(text), keys);
   } catch (err) {
     console.error(err);
     const status = err?.status;
@@ -789,11 +1096,8 @@ async function readWithClaude() {
   }
 }
 
-function applyExtracted(r) {
-  const keys = ['now_bp', 'now_ticket', 'user_rank', 'bonus_nomal', 'bonus_event', 'nomal_score', 'event_score'];
-  if (mode === 'now') keys.unshift(...PROGRESS_FIELDS);
+function applyExtracted(r, keys) {
   const filled = keys.filter((k) => assign(k, r[k])).map((k) => LABELS[k]);
-
   onChange();
   const note = r.notes ? `\nメモ：${r.notes}` : '';
   setStatus(filled.length
@@ -810,7 +1114,9 @@ function init() {
   load();
   applyMode();
   updateStatus();
+  loadLastResult();
   setTab(prefs.tab);
+  requestPersistentStorage();
 
   document.querySelectorAll('.tabbar button').forEach((b) => {
     b.addEventListener('click', () => { haptic(); setTab(b.dataset.tab); });
@@ -818,9 +1124,21 @@ function init() {
   document.querySelectorAll('.segmented button').forEach((b) => {
     b.addEventListener('click', () => {
       haptic();
-      mode = b.dataset.mode;
+      const group = b.closest('.segmented').dataset.group;
+      if (group === 'mode') mode = b.dataset.value;
+      if (group === 'type' && eventType !== b.dataset.value) {
+        eventType = b.dataset.value;
+        buildWhistleChips();
+        toast(`${type().name}イベントの計算に切り替えました`);
+      }
       onChange();
     });
+  });
+  $('quick350').addEventListener('click', () => {
+    haptic();
+    setValue('goal_point', QUICK_GOAL);
+    flash('goal_point');
+    onChange();
   });
 
   // 入力・設定タブの項目はどちらもここで拾う
@@ -828,11 +1146,21 @@ function init() {
   document.addEventListener('input', onFieldEvent);
   document.addEventListener('change', onFieldEvent);
   $('form').addEventListener('submit', (e) => e.preventDefault()); // Enterキーでページが再読み込みされないように
-  $('goBtn').addEventListener('click', submit);
+  $('goBtn').addEventListener('click', calculate);
 
   $('apiKey').addEventListener('change', () => storage(() => localStorage.setItem(API_KEY_KEY, $('apiKey').value.trim())));
   $('model').addEventListener('change', () => { prefs.model = $('model').value; savePrefs(); });
   $('engine').addEventListener('change', () => { prefs.engine = $('engine').value; savePrefs(); });
+  $('proxyUrl').addEventListener('change', () => {
+    const v = $('proxyUrl').value.trim();
+    if (v && !/^https:\/\/[^\s]+$/.test(v)) {
+      toast('URLは https:// から始まる形で入れてください');
+      return;
+    }
+    prefs.proxy = v;
+    savePrefs();
+    toast(v ? '中継サーバーを登録しました。結果をアプリ内に表示します' : '中継サーバーの登録を外しました');
+  });
 
   $('resetBtn').addEventListener('click', () => {
     if (!confirm('現在pt・PASS・ホイッスル・メガホン・BP・チケットを初期値に戻しますか？')) return;
