@@ -17,7 +17,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@500;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="assist.css?v=20261002c">
+  <link rel="stylesheet" href="assist.css?v=20261003a">
 </head>
 <body data-type="unit">
   <div class="bg" aria-hidden="true"><i></i><i></i><i></i></div>
@@ -227,10 +227,10 @@
       <div class="list">
         <div class="item field stack">
           <label for="proxyUrl">中継サーバーのURL</label>
-          <input id="proxyUrl" type="url" inputmode="url" placeholder="https://enst-proxy.xxxx.workers.dev" autocomplete="off" spellcheck="false">
+          <input id="proxyUrl" type="url" inputmode="url" placeholder="空欄なら標準の中継サーバーを使用" autocomplete="off" spellcheck="false">
         </div>
       </div>
-      <p class="note pad">enst-lab の結果はブラウザから直接読み取れないため、無料の Cloudflare Workers を中継に使います（作り方は <a href="https://github.com/kage893-hub/enst#結果をアプリ内に表示する中継サーバー" target="_blank" rel="noopener">README</a>）。未設定のときは enst-lab の結果ページを開きます。</p>
+      <p class="note pad">enst-lab の結果はブラウザから直接読み取れないため、中継サーバーを通して受け取ります。ふだんは空欄のままでOKです（自分で用意した中継サーバーを使う場合だけ入力。作り方は <a href="https://github.com/kage893-hub/enst#結果をアプリ内に表示する中継サーバー" target="_blank" rel="noopener">README</a>）。</p>
 
       <p class="group-title">画像読み取り</p>
       <div class="list">
@@ -263,6 +263,7 @@
 
       <p class="group-title">その他</p>
       <div class="list">
+        <button type="button" class="item link" id="shareBtn">友達にアプリを共有<span>⇪</span></button>
         <a class="item link" id="enstLink" href="https://enst-lab.com/event.php" target="_blank" rel="noopener">enst-lab を直接開く<span>↗</span></a>
         <a class="item link" href="index.html">オフライン簡易計算機<span>›</span></a>
         <button type="button" class="item link danger" id="resetBtn">進捗の入力をリセット<span>↺</span></button>
@@ -322,6 +323,6 @@
       document.body.appendChild(bar);
     }, true);
   </script>
-  <script src="assist.js?v=20261002c" type="module"></script>
+  <script src="assist.js?v=20261003a" type="module"></script>
 </body>
 </html>

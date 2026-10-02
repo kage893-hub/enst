@@ -32,6 +32,10 @@ const TESSERACT_URL = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesserac
 
 const QUICK_GOAL = '350';
 
+// 標準で使う中継サーバー（設定で自分のURLに変えることもできる）
+const DEFAULT_PROXY = 'https://enst-proxy.kage893.workers.dev';
+const APP_URL = 'https://kage893-hub.github.io/enst/assist.html';
+
 // enst-lab の初期値に合わせる
 const DEFAULTS = {
   goal_point: '',
@@ -491,7 +495,7 @@ async function calculate() {
   }
   haptic();
   const payload = buildPayload(v);
-  const proxy = (prefs.proxy || '').trim();
+  const proxy = (prefs.proxy || DEFAULT_PROXY).trim();
   if (!proxy) {
     openInEnstLab(payload);
     toast('結果をアプリ内に出すには、設定で中継サーバーを登録してください', 4000);
@@ -1176,7 +1180,20 @@ function init() {
     }
     prefs.proxy = v;
     savePrefs();
-    toast(v ? '中継サーバーを登録しました。結果をアプリ内に表示します' : '中継サーバーの登録を外しました');
+    toast(v ? '中継サーバーを登録しました' : '標準の中継サーバーを使います');
+  });
+
+  $('shareBtn').addEventListener('click', async () => {
+    haptic();
+    const data = { title: 'ダイヤ計算アシスト', text: 'あんスタ!!Music のイベントダイヤ計算（enst-lab）をスマホで簡単に入力できるアプリ', url: APP_URL };
+    try {
+      if (navigator.share) {
+        await navigator.share(data);
+      } else {
+        await navigator.clipboard.writeText(APP_URL);
+        toast('アプリのURLをコピーしました');
+      }
+    } catch (_) { /* 共有をキャンセルしたときなど */ }
   });
 
   $('resetBtn').addEventListener('click', () => {
