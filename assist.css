@@ -608,6 +608,28 @@ body.has-cta { padding-bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom
 .result-error p { margin: 0; }
 .result-error .eyebrow { color: var(--warn); }
 
+/* 結果の履歴 */
+.history { margin-top: 10px; }
+.history-head { display: flex; align-items: center; justify-content: space-between; }
+.history-clear { border: 0; background: none; color: var(--muted); font-size: 0.75rem; margin-top: 14px; }
+.history-item {
+  width: 100%; border-left: 0; border-right: 0; border-top: 0; background: none; color: inherit; text-align: left;
+  transition: background 0.2s;
+}
+.history-item.on { background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent); }
+.history-left { display: flex; flex-direction: column; min-width: 0; }
+.history-left b { font-size: 0.9rem; font-family: var(--num); }
+.history-left small { font-size: 0.72rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.history-dia { display: flex; align-items: baseline; gap: 2px; flex: 0 0 auto; }
+.history-dia b { font-family: var(--num); font-size: 1.4rem; font-weight: 800; color: var(--accent); }
+.history-dia small { font-size: 0.75rem; color: var(--muted); }
+.past-banner {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%;
+  margin-bottom: 10px; padding: 10px 14px; border-radius: 14px;
+  border: 1px solid var(--line); background: var(--glass); color: var(--muted); font-size: 0.8rem;
+}
+.past-banner b { color: var(--accent); white-space: nowrap; }
+
 /* ===== トースト ===== */
 .toast {
   position: fixed; left: 50%; top: calc(env(safe-area-inset-top) + 14px); z-index: 20;

@@ -25,7 +25,9 @@ const EVENT_TYPES = {
 
 const STORAGE_KEY = 'enst-assist-v1';
 const PREFS_KEY = 'enst-assist-prefs';
-const RESULT_KEY = 'enst-assist-result';
+const RESULT_KEY = 'enst-assist-result'; // 以前の版（最後の1回分だけ）
+const HISTORY_KEY = 'enst-assist-history';
+const HISTORY_MAX = 10;
 const TESSERACT_URL = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
 
 const QUICK_GOAL = '350';
@@ -514,7 +516,7 @@ async function calculate() {
       at: Date.now(),
       payload,
     };
-    storage(() => localStorage.setItem(RESULT_KEY, JSON.stringify(result)));
+    addToHistory(result);
     renderResult(result);
     setTab('result');
     navigator.vibrate?.([10, 30, 10]);
@@ -596,6 +598,14 @@ function renderResult(r) {
   const remain = find(/目標ptまであと/);
   const progress = Number((remain?.note.match(/([\d.]+)\s*%/) || [])[1]);
 
+  const latest = getHistory()[0];
+  if (latest && latest.at !== r.at) {
+    const past = el('button', 'past-banner');
+    past.type = 'button';
+    past.append(el('span', '', `過去の結果（${formatAt(r.at)}）を表示中`), el('b', '', '最新に戻る ›'));
+    past.addEventListener('click', () => { haptic(); renderResult(latest); });
+    body.appendChild(past);
+  }
   const meta = el('p', 'result-meta', `${EVENT_TYPES[r.eventType]?.name || ''}イベント ・ 目標 ${Number(r.goal).toLocaleString('ja-JP')}万pt ・ ${formatAt(r.at)} 計算`);
   body.appendChild(meta);
 
@@ -662,7 +672,77 @@ function renderResult(r) {
   actions.append(back, open);
   body.appendChild(actions);
 
+  renderHistory(body, r.at);
   $('resultDot').classList.add('on');
+}
+
+// ---- 計算結果の履歴（最新10回分） ----
+function getHistory() {
+  let list = storage(() => JSON.parse(localStorage.getItem(HISTORY_KEY)));
+  if (!Array.isArray(list)) {
+    // 以前の版で保存していた最後の結果を、履歴の1件目として引き継ぐ
+    const last = storage(() => JSON.parse(localStorage.getItem(RESULT_KEY)));
+    list = last?.summary?.length ? [last] : [];
+  }
+  return list.filter((r) => r?.summary?.length);
+}
+
+function saveHistory(list) {
+  storage(() => {
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(list));
+    localStorage.removeItem(RESULT_KEY);
+  });
+}
+
+function addToHistory(result) {
+  saveHistory([result, ...getHistory()].slice(0, HISTORY_MAX));
+}
+
+const diaOf = (r) => (r.summary.find((row) => /必要ダイヤ/.test(row.label))?.value || '').match(/[\d,]+/)?.[0] || '—';
+
+function renderHistory(body, currentAt) {
+  const list = getHistory();
+  if (!list.length) return;
+  const wrap = el('div', 'history');
+  const head = el('div', 'history-head');
+  head.append(el('p', 'group-title', `これまでの結果（最新${HISTORY_MAX}回分）`));
+  const clear = el('button', 'history-clear', '全部消す');
+  clear.type = 'button';
+  clear.addEventListener('click', () => {
+    if (!confirm('保存している計算結果をすべて消しますか？')) return;
+    saveHistory([]);
+    body.innerHTML = '';
+    body.hidden = true;
+    $('resultEmpty').hidden = false;
+    toast('計算結果の履歴を消しました');
+  });
+  head.appendChild(clear);
+  wrap.appendChild(head);
+
+  const box = el('div', 'list');
+  list.forEach((r, i) => {
+    const item = el('button', 'item history-item');
+    item.type = 'button';
+    if (r.at === currentAt) item.classList.add('on');
+    const left = el('span', 'history-left');
+    left.append(
+      el('b', '', `${formatAt(r.at)}${i === 0 ? '（最新）' : ''}`),
+      el('small', '', `${EVENT_TYPES[r.eventType]?.name || ''} ・ ${r.mode === 'start' ? '開始から' : '今のイベント'} ・ 目標${Number(r.goal).toLocaleString('ja-JP')}万`),
+    );
+    if (r.current) left.appendChild(el('small', '', `現在 ${r.current}`));
+    const right = el('span', 'history-dia');
+    right.append(el('b', '', diaOf(r)), el('small', '', '個'));
+    item.append(left, right);
+    item.addEventListener('click', () => {
+      haptic();
+      renderResult(r);
+      $('resultDot').classList.remove('on');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    });
+    box.appendChild(item);
+  });
+  wrap.appendChild(box);
+  body.appendChild(wrap);
 }
 
 function renderResultError(message, payload) {
@@ -680,11 +760,12 @@ function renderResultError(message, payload) {
   back.addEventListener('click', () => setTab('input'));
   box.append(open, back);
   body.appendChild(box);
+  renderHistory(body, null);
 }
 
 function loadLastResult() {
-  const r = storage(() => JSON.parse(localStorage.getItem(RESULT_KEY)));
-  if (r?.summary?.length) renderResult(r);
+  const [r] = getHistory();
+  if (r) renderResult(r);
   $('resultDot').classList.remove('on');
 }
 
