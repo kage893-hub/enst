@@ -812,8 +812,10 @@ async function getWorker() {
 }
 
 // ---- 画面の決まった位置から数字を読む（イベント画面・アイテム画面） ----
-// 基準にしたスクショ（2000×900）上の位置。ゲームの画面は高さに合わせて拡大縮小され、
-// 左側のUIは左端、右側のUIは右端、中央のパネルは中央に寄るので、端末の横幅が違ってもこの基準で位置を計算できる。
+// 基準にしたスクショ（2000×900・左右にノッチよけの余白 114 がある端末）上の位置。
+// ゲームの画面は 16:9 の枠が収まる大きさに拡大縮小され、各パーツは画面の端や中央を基準に置かれる
+//   ax: 'left' / 'right' / 'center'（横の基準）  ay: 'top' / 'bottom' / 'middle'（縦の基準）
+// 左右の余白（ノッチよけ）は端末ごとに違うので、何通りか試して正しく読めたものを採用する。
 //   ink: 'dark' = 明るい地に濃い文字 / 'light' = 色付きの地に白い文字 / 'outline' = 縁取りだけの白抜き文字
 //   kind: 'number' = 数字 / 'fraction' = 「4/10」の左側 / 'text' = 日本語の文字
 const SCREEN_LAYOUTS = [
@@ -822,9 +824,9 @@ const SCREEN_LAYOUTS = [
     base: { w: 2000, h: 900 },
     regions: [
       // 右下「累計イベントpt」の数字（白地に黒文字）
-      { id: 'evepoint_now', anchor: 'right', x0: 1650, x1: 1850, y0: 568, y1: 622, ink: 'dark', kind: 'number', suffix: 'pt' },
+      { id: 'evepoint_now', ax: 'right', ay: 'bottom', x0: 1595, x1: 1850, y0: 568, y1: 622, ink: 'dark', kind: 'number', suffix: 'pt' },
       // 左下「イベント楽曲ライブ」ボタンのPASS枚数（オレンジ地に白文字）
-      { id: 'pass_now', anchor: 'left', x0: 300, x1: 440, y0: 788, y1: 842, ink: 'light', kind: 'number' },
+      { id: 'pass_now', ax: 'left', ay: 'bottom', x0: 300, x1: 460, y0: 788, y1: 842, ink: 'light', kind: 'number' },
     ],
     // 「累計イベントpt」が読めたらこの画面とみなす
     resolve: (v) => (v.evepoint_now ? [v.evepoint_now, v.pass_now].filter(Boolean) : null),
@@ -834,11 +836,11 @@ const SCREEN_LAYOUTS = [
     base: { w: 2000, h: 900 },
     regions: [
       // 上のバー「BP 4/10」「WORK 7/12」（紺地に白文字）
-      { id: 'now_bp', anchor: 'right', x0: 1150, x1: 1265, y0: 44, y1: 86, ink: 'light', kind: 'fraction' },
-      { id: 'now_ticket', anchor: 'right', x0: 1470, x1: 1575, y0: 44, y1: 86, ink: 'light', kind: 'fraction' },
+      { id: 'now_bp', ax: 'right', ay: 'top', x0: 1150, x1: 1265, y0: 44, y1: 86, ink: 'light', kind: 'fraction' },
+      { id: 'now_ticket', ax: 'right', ay: 'top', x0: 1470, x1: 1575, y0: 44, y1: 86, ink: 'light', kind: 'fraction' },
       // 右のパネル：選んでいるアイテムの名前と「所持 32」
-      { id: 'item_name', anchor: 'center', x0: 1320, x1: 1580, y0: 368, y1: 418, ink: 'dark', kind: 'text' },
-      { id: 'item_count', anchor: 'center', x0: 1405, x1: 1520, y0: 474, y1: 532, ink: 'outline', kind: 'number' },
+      { id: 'item_name', ax: 'center', ay: 'middle', x0: 1320, x1: 1580, y0: 368, y1: 418, ink: 'dark', kind: 'text' },
+      { id: 'item_count', ax: 'center', ay: 'middle', x0: 1405, x1: 1560, y0: 474, y1: 532, ink: 'outline', kind: 'number' },
     ],
     resolve: (v) => {
       const out = [v.now_bp, v.now_ticket].filter(Boolean);
@@ -873,12 +875,28 @@ async function getTextWorker() {
   return textWorker;
 }
 
-function regionRect(layout, r, W, H) {
-  const s = H / layout.base.h;
-  const x = (v) => (r.anchor === 'right' ? W - (layout.base.w - v) * s
-    : r.anchor === 'center' ? W / 2 + (v - layout.base.w / 2) * s
+const BASE_INSET = 114; // 基準のスクショの左右の余白（ノッチよけ）
+
+// 画面の拡大率：16:9 の枠が画面に収まる大きさ
+function layoutScale(layout, W, H) {
+  return Math.min(W * 9 / 16, H) / layout.base.h;
+}
+
+// 試す左右の余白（基準の単位）。横長の端末ほどノッチよけの余白があることが多い
+function insetCandidates(W, H) {
+  return W / H > 1.9 ? [BASE_INSET, 0, 70, 150, 40] : [0, BASE_INSET, 70, 40, 150];
+}
+
+function regionRect(layout, r, W, H, inset) {
+  const s = layoutScale(layout, W, H);
+  const { w: BW, h: BH } = layout.base;
+  const x = (v) => (r.ax === 'right' ? W - inset * s - (BW - BASE_INSET - v) * s
+    : r.ax === 'center' ? W / 2 + (v - BW / 2) * s
+    : inset * s + (v - BASE_INSET) * s);
+  const y = (v) => (r.ay === 'bottom' ? H - (BH - v) * s
+    : r.ay === 'middle' ? H / 2 + (v - BH / 2) * s
     : v * s);
-  return { x: x(r.x0), y: r.y0 * s, w: x(r.x1) - x(r.x0), h: (r.y1 - r.y0) * s };
+  return { x: x(r.x0), y: y(r.y0), w: x(r.x1) - x(r.x0), h: y(r.y1) - y(r.y0) };
 }
 
 // 縁取りだけの白抜き文字から、縁に囲まれた白い部分（＝本来の文字の形）だけを取り出す。
@@ -1036,14 +1054,30 @@ async function readByLayout(img) {
   const im = await loadImage(img.original || img.url);
   const W = im.naturalWidth;
   const H = im.naturalHeight;
-  if (W < H * 1.6) return null; // ゲーム画面は横長
+  if (W < H * 1.2) return null; // ゲーム画面は横長
   const f = img.width / W; // 表示用の縮小画像の座標に直す
+  const ok = (r, hit) => hit && (r.kind === 'text' || (hit.value !== null && hit.conf >= 40));
+  // 端の余白の候補ごとに読み、欠けずに読めたもの（文字が長く、自信度が高いもの）を選ぶ
+  const readBest = async (layout, r) => {
+    let best = null;
+    for (const inset of r.ax === 'center' ? [0] : insetCandidates(W, H)) {
+      const rect = regionRect(layout, r, W, H, inset);
+      const hit = await readRegion(im, rect, r);
+      if (!ok(r, hit)) continue;
+      const score = (hit.text || '').replace(/[^0-9/]/g, '').length * 1000 + hit.conf;
+      if (!best || score > best.score) best = { hit, rect, score };
+    }
+    return best;
+  };
   for (const layout of SCREEN_LAYOUTS) {
+    // 最初の項目が読めなければ、この画面ではない
+    const firstBest = await readBest(layout, layout.regions[0]);
+    if (!firstBest) continue;
     const found = {};
     for (const r of layout.regions) {
-      const rect = regionRect(layout, r, W, H);
-      const hit = await readRegion(im, rect, r);
-      if (!hit || (r.kind !== 'text' && (hit.value === null || hit.conf < 40))) continue;
+      const best = r === layout.regions[0] ? firstBest : await readBest(layout, r);
+      if (!best) continue;
+      const { hit, rect } = best;
       found[r.id] = {
         key: r.id,
         value: hit.value,
