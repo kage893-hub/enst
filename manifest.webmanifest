@@ -1,0 +1,17 @@
+{
+  "name": "ダイヤ計算アシスト（enst-lab 入力）",
+  "short_name": "ダイヤ計算",
+  "description": "スクショから数値を読み取り、enst-lab のイベントダイヤ計算機に代わりに入力します。",
+  "start_url": "./assist.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0f0c1d",
+  "theme_color": "#0f0c1d",
+  "lang": "ja",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

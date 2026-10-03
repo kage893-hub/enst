@@ -1,0 +1,33 @@
+// オフラインでも画面を開けるようにするための簡単なキャッシュ
+// 自分のファイルはネットワーク優先（更新をすぐ反映）、つながらないときだけキャッシュを使う
+const CACHE = 'enst-assist-v20';
+const ASSETS = ['assist.html', 'assist.css', 'assist.js', 'index.html', 'style.css', 'app.js', 'manifest.webmanifest', 'icon.svg', 'icon-180.png', 'icon-192.png'];
+
+self.addEventListener('install', (e) => {
+  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(ASSETS)).then(() => self.skipWaiting()));
+});
+
+self.addEventListener('activate', (e) => {
+  e.waitUntil(
+    caches.keys()
+      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
+      .then(() => self.clients.claim()),
+  );
+});
+
+self.addEventListener('fetch', (e) => {
+  const url = new URL(e.request.url);
+  if (e.request.method !== 'GET' || url.origin !== location.origin) return;
+  e.respondWith(
+    // ブラウザのHTTPキャッシュを使わず毎回最新を取りに行く（画面とプログラムの版ズレを防ぐ）
+    fetch(e.request, { cache: 'no-cache' })
+      .then((res) => {
+        if (res.ok) {
+          const copy = res.clone();
+          caches.open(CACHE).then((c) => c.put(e.request, copy));
+        }
+        return res;
+      })
+      .catch(() => caches.match(e.request, { ignoreSearch: true })),
+  );
+});
