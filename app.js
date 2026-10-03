@@ -13,6 +13,14 @@
   };
 
   const INPUT_DEFAULTS = {
+    localEventType: 'unit',
+    liveScore: '',
+    liveBonus: '0',
+    tourScore4: '',
+    tourBonus4: '0',
+    tourFever: '100',
+    eventScore: '',
+    eventBonus: '0',
     endAt: '',
     nowAt: '',
     targetPt: '',
@@ -28,6 +36,7 @@
   const FIELDS = [...Object.keys(INPUT_DEFAULTS), ...Object.keys(SPEC_DEFAULTS)];
   const $ = (id) => document.getElementById(id);
   const fmt = (n) => Math.round(n).toLocaleString('ja-JP');
+  const fmtPt = (n) => Number.isInteger(n) ? fmt(n) : n.toLocaleString('ja-JP', { maximumFractionDigits: 2 });
 
   let nowIsLive = true; // 現在日時を手入力していない間は自動で今の時刻を使う
 
@@ -47,6 +56,74 @@
   function num(id) {
     const v = parseFloat($(id).value);
     return isFinite(v) ? v : 0;
+  }
+
+  // enst-lab の詳細欄と照合した式で、1BPあたりの平均ptを求める。
+  function estimatePtPerBp(bpOverride = null) {
+    const score13 = num('liveScore');
+    const eventScore = num('eventScore');
+    if (!score13) return null;
+    const bp = Math.max(1, Math.floor(bpOverride || num('bpPerSong')) || INPUT_DEFAULTS.bpPerSong);
+    const bonus13 = Math.max(0, num('liveBonus'));
+    const base13 = 2500 + Math.floor(score13 * 2);
+    let liveRate;
+    if ($('localEventType').value === 'tour') {
+      const score4 = num('tourScore4');
+      if (!score4) return null;
+      const bonus4 = Math.max(0, num('tourBonus4'));
+      const fever = 100 + Math.max(50, Math.min(110, num('tourFever') || 100));
+      const base4 = 2250 + Math.floor(score4 * 2);
+      const points13 = Math.floor(base13 * bp * (100 + bonus13) / 100);
+      const points4 = Math.floor(base4 * bp * (100 + bonus4) * fever / 10000);
+      liveRate = (3 * points13 + points4) / (4 * bp);
+    } else {
+      const normalBase = 2000 + Math.floor(score13 * 2);
+      liveRate = Math.floor(normalBase * bp * (100 + bonus13) / 100) / bp;
+    }
+    // 詳細欄の1000PASS分を、1BPあたり約10PASSとして換算する。
+    const eventBonus = Math.max(0, num('eventBonus'));
+    const eventPoints1000Pass = eventScore
+      ? Math.floor((10000 + Math.floor(eventScore * 2)) * 10 * (100 + eventBonus) / 100)
+      : 0;
+    const eventRate = eventPoints1000Pass / 100;
+    return liveRate + eventRate;
+  }
+
+  function updateFormulaPreview() {
+    document.querySelectorAll('.tour-field').forEach((el) => {
+      el.hidden = $('localEventType').value !== 'tour';
+    });
+    const rate = estimatePtPerBp();
+    $('formulaPreview').textContent = rate
+      ? `試算：約${fmtPt(rate)}pt/BP（イベント曲のPASS分を含む）。選んだBPでの1曲ptは約${fmtPt(rate * Math.max(1, num('bpPerSong')))}ptです。`
+      : '通常ライブのスコアを入力すると、獲得ptを試算します。';
+  }
+
+  function futureRewardBp(currentPt, reachedPt, eventType) {
+    const whistleRewards = [
+      [6000, 3], [40000, 3], [90000, 3], [140000, 3], [260000, 3],
+      [360000, 5], [420000, 5], [540000, 5],
+    ];
+    let bp = whistleRewards.reduce((sum, [at, count]) =>
+      sum + (at > currentPt && at <= reachedPt ? count : 0), 0);
+    const lastMegaphoneAt = eventType === 'tour' ? 2955000 : 3000000;
+    for (const at of [1050000, 2550000, lastMegaphoneAt]) {
+      if (at > currentPt && at <= reachedPt) bp += 10;
+    }
+    return bp;
+  }
+
+  function availableBpWithRewards(currentPt, targetPt, baseAvailableBp, pointRate, eventType) {
+    let rewardBp = 0;
+    let availableBp = baseAvailableBp;
+    for (let i = 0; i < 12 && pointRate; i++) {
+      const reach = currentPt + Math.floor(availableBp * pointRate);
+      const next = futureRewardBp(currentPt, Math.min(targetPt || reach, reach), eventType);
+      if (next <= rewardBp) break;
+      rewardBp = next;
+      availableBp = baseAvailableBp + rewardBp;
+    }
+    return { rewardBp, availableBp };
   }
 
   // ---- 保存・復元 ----
@@ -111,6 +188,7 @@
   }
 
   function calculate() {
+    updateFormulaPreview();
     const spec = {
       bpMax: Math.max(1, num('bpMax')),
       bpRecoverMin: Math.max(1, num('bpRecoverMin')),
@@ -135,10 +213,14 @@
     const remainPt = Math.max(0, target - current);
 
     const natural = naturalBp(minutesLeft, spec, num('idleHours'));
-    const availableBp = num('currentBp') + natural + num('extraBp');
+    const baseAvailableBp = num('currentBp') + natural + num('extraBp');
+    const pointRate = ptPerSong && bpPerSong ? ptPerSong / bpPerSong : 0;
+    const { rewardBp, availableBp } = availableBpWithRewards(
+      current, target, baseAvailableBp, pointRate, $('localEventType').value,
+    );
 
-    renderResult({ spec, target, remainPt, ptPerSong, bpPerSong, ownedDia, natural, availableBp, minutesLeft });
-    renderCompare({ spec, remainPt, ptPerSong, bpPerSong, availableBp, minutesLeft });
+    renderResult({ spec, target, remainPt, ptPerSong, bpPerSong, ownedDia, natural, rewardBp, availableBp, minutesLeft });
+    renderCompare({ spec, currentPt: current, targetPt: target, remainPt, ptPerSong, bpPerSong, baseAvailableBp, minutesLeft });
     save();
   }
 
@@ -183,6 +265,10 @@
         html += `<li class="warn-text">プレイ時間が残り時間を超えています。消費BPを増やすことを検討してください。</li>`;
       }
     }
+    if (c.rewardBp) html += `<li>到達見込みのイベント報酬: <b>+${fmt(c.rewardBp)}BP</b>（ホイッスル・メガホン）</li>`;
+    if ($('localEventType').value === 'unit') {
+      html += '<li>楽曲イベントのメガホン3個目は3,000,000ptで計算しています。</li>';
+    }
     html += `<li>所持ダイヤをすべてBP回復に使うと、最終 <b>${fmt(reachTotal)}pt</b> まで到達見込み`
       + (reachTotal >= c.target ? '（目標達成可能）' : `（目標まで ${fmt(c.target - reachTotal)}pt 不足）`) + '</li>';
     html += '</ul>';
@@ -195,9 +281,15 @@
     tbody.innerHTML = '';
     if (!c.ptPerSong || c.remainPt <= 0) return;
     const ptPerBp = c.ptPerSong / c.bpPerSong;
+    const estimatedRate = estimatePtPerBp();
+    const useFormula = estimatedRate && Math.abs(estimatedRate * c.bpPerSong - c.ptPerSong) <= 0.02;
     for (let b = 1; b <= c.spec.bpMax; b++) {
-      const pt = Math.round(ptPerBp * b);
-      const p = plan(c.remainPt, pt, b, c.availableBp, c.spec);
+      const rate = useFormula ? estimatePtPerBp(b) : ptPerBp;
+      const pt = Math.max(1, Math.round(rate * b));
+      const rewards = availableBpWithRewards(
+        c.currentPt, c.targetPt, c.baseAvailableBp, rate, $('localEventType').value,
+      );
+      const p = plan(c.remainPt, pt, b, rewards.availableBp, c.spec);
       const tr = document.createElement('tr');
       if (b === c.bpPerSong) tr.className = 'current';
       const overTime = c.minutesLeft > 0 && p.playMin > c.minutesLeft;
@@ -238,6 +330,16 @@
       try { localStorage.removeItem(STORAGE_KEY); } catch (_) { /* noop */ }
       load();
       buildBpOptions();
+      calculate();
+    });
+
+    $('useEstimate').addEventListener('click', () => {
+      const rate = estimatePtPerBp();
+      if (!rate) {
+        $('formulaPreview').textContent = '通常ライブのスコア（ツアーは4曲目も）を入力してください。';
+        return;
+      }
+      $('ptPerSong').value = String(Number((rate * Math.max(1, num('bpPerSong'))).toFixed(2)));
       calculate();
     });
 
