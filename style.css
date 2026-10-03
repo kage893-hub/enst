@@ -69,6 +69,8 @@ label {
   font-weight: 600;
 }
 
+.tour-field[hidden] { display: none; }
+
 label small { font-weight: 400; color: var(--muted); font-size: 0.75rem; }
 
 input, select {

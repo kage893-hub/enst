@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>あんスタMusic イベント計算機</title>
   <meta name="description" content="あんスタ!!Music のイベントで目標ptまでに必要な曲数・BP・ダイヤを計算します。">
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css?v=20261003m">
 </head>
 <body>
   <header class="site-header">
@@ -34,6 +34,45 @@
     <section class="card">
       <h2>ポイント</h2>
       <div class="grid">
+        <label>イベント
+          <select id="localEventType">
+            <option value="unit">ユニット新曲</option>
+            <option value="tour">ツアー</option>
+          </select>
+        </label>
+        <label>通常ライブ／ツアー1〜3曲目のスコア
+          <input type="number" id="liveScore" min="0" step="1" inputmode="numeric" placeholder="100">
+          <small>万点単位（100＝100万点）</small>
+        </label>
+        <label>通常ライブ／ツアー1〜3曲目の特効
+          <input type="number" id="liveBonus" min="0" step="1" inputmode="numeric" placeholder="0">
+          <small>%</small>
+        </label>
+        <label class="tour-field">ツアー4曲目のスコア
+          <input type="number" id="tourScore4" min="0" step="1" inputmode="numeric" placeholder="100">
+          <small>万点単位</small>
+        </label>
+        <label class="tour-field">ツアー4曲目の特効
+          <input type="number" id="tourBonus4" min="0" step="1" inputmode="numeric" placeholder="0">
+          <small>%</small>
+        </label>
+        <label class="tour-field">ツアー4曲目 FEVER
+          <input type="number" id="tourFever" min="50" max="110" step="1" inputmode="numeric" value="100">
+          <small>%</small>
+        </label>
+        <label>イベント曲のスコア
+          <input type="number" id="eventScore" min="0" step="1" inputmode="numeric" placeholder="100">
+          <small>万点単位（100＝100万点）</small>
+        </label>
+        <label>イベント曲の特効
+          <input type="number" id="eventBonus" min="0" step="1" inputmode="numeric" placeholder="0">
+          <small>%</small>
+        </label>
+      </div>
+      <p class="hint" id="formulaPreview">スコアと特効を入れると、獲得ptを試算します。</p>
+      <button type="button" id="useEstimate" class="small">この試算を1曲ptに使う</button>
+      <p class="hint">独自試算は1BPあたり約10PASSを得る前提です。ツアーは4曲とも同じBPで走る平均値です。ゲーム内で一致を確認した式ではないため、実測値があれば「1曲あたりの獲得pt」に直接入力してください。</p>
+      <div class="grid">
         <label>目標pt
           <input type="number" id="targetPt" min="0" step="1" inputmode="numeric">
         </label>
@@ -41,8 +80,8 @@
           <input type="number" id="currentPt" min="0" step="1" inputmode="numeric">
         </label>
         <label>1曲あたりの獲得pt
-          <input type="number" id="ptPerSong" min="1" step="1" inputmode="numeric">
-          <small>下で選んだ消費BPでプレイしたときの実測値</small>
+          <input type="number" id="ptPerSong" min="1" step="any" inputmode="decimal">
+          <small>「試算を使う」か、実測した値を入力</small>
         </label>
         <label>1曲の消費BP
           <select id="bpPerSong"></select>
@@ -117,9 +156,9 @@
   </main>
 
   <footer class="site-footer">
-    <p>非公式のファンメイドツールです。数値は目安であり、ゲーム内仕様の変更により実際と異なる場合があります。</p>
+    <p>独自試算は公開情報と確認できた式を使った目安です。実際のポイントと照合できていないため、enst-lab の計算も引き続き使えます。</p>
   </footer>
 
-  <script src="app.js"></script>
+  <script src="app.js?v=20261003m"></script>
 </body>
 </html>
