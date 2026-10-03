@@ -926,10 +926,10 @@ const SCREEN_LAYOUTS = [
       // 上のバー「BP 4/10」「WORK 7/12」（紺地に白文字）
       { id: 'now_bp', ax: 'right', ay: 'top', x0: 1150, x1: 1265, y0: 44, y1: 86, ink: 'light', kind: 'fraction' },
       { id: 'now_ticket', ax: 'right', ay: 'top', x0: 1470, x1: 1575, y0: 44, y1: 86, ink: 'light', kind: 'fraction' },
-      // 「消費アイテム」一覧の先頭3マス：アイコンの色でメガホン／ホイッスルを見分け、下の「×32」を読む
-      ...[[318, 448], [465, 595], [612, 742]].flatMap(([x0, x1], i) => [
+      // 「消費アイテム」一覧の1行目（5マス）：アイコンの色でメガホン／ホイッスルを見分け、そのマスだけ下の「×32」を読む
+      ...[[318, 448], [465, 595], [612, 742], [759, 889], [906, 1036]].flatMap(([x0, x1], i) => [
         { id: `cell${i}_icon`, ax: 'center', ay: 'middle', x0: x0 + 5, x1: x1 - 5, y0: 268, y1: 345, kind: 'icon' },
-        { id: `cell${i}_count`, ax: 'center', ay: 'middle', x0, x1, y0: 343, y1: 392, ink: 'outline', kind: 'number' },
+        { id: `cell${i}_count`, ax: 'center', ay: 'middle', x0, x1, y0: 343, y1: 392, ink: 'outline', kind: 'number', needs: `cell${i}_icon` },
       ]),
     ],
     resolve: (v) => {
@@ -937,7 +937,7 @@ const SCREEN_LAYOUTS = [
       if (!out.length) return null;
       // メガホンは持っているときだけ一覧の先頭に出る。ホイッスルが見つかってメガホンが無ければ0個
       for (const key of ['megaphone', 'whistle']) {
-        const i = [0, 1, 2].find((n) => v[`cell${n}_icon`]?.value === key && v[`cell${n}_count`]);
+        const i = [0, 1, 2, 3, 4].find((n) => v[`cell${n}_icon`]?.value === key && v[`cell${n}_count`]);
         if (i !== undefined) out.push({ ...v[`cell${i}_count`], key });
       }
       if (out.some((n) => n.key === 'whistle') && !out.some((n) => n.key === 'megaphone')) {
@@ -1109,15 +1109,21 @@ function parseRegionText(r, text) {
 async function readRegion(im, rect, r) {
   if (r.kind === 'icon') return { value: classifyIcon(im, rect), text: '', conf: 100 };
   const worker = await getDigitWorker();
-  let best = null;
-  for (let level = 0; level < 3; level++) {
-    const { data } = await worker.recognize(binarizeRegion(im, rect, r.ink, level));
-    const text = data.text.replace(/\s/g, '');
-    const cand = { value: parseRegionText(r, text), text, conf: data.confidence };
-    if (r.suffix && !text.endsWith(r.suffix)) cand.value = null; // 単位（pt）が無い＝別の画面
-    if (cand.value !== null && (!best || cand.conf > best.conf)) best = cand;
-    if (cand.value !== null && cand.conf >= 80) break;
-  }
+  const readWith = async (tries) => {
+    let best = null;
+    for (const [ink, level] of tries) {
+      const { data } = await worker.recognize(binarizeRegion(im, rect, ink, level));
+      const text = data.text.replace(/\s/g, '');
+      const cand = { value: parseRegionText(r, text), text, conf: data.confidence };
+      if (r.suffix && !text.endsWith(r.suffix)) cand.value = null; // 単位（pt）が無い＝別の画面
+      if (cand.value !== null && (!best || cand.conf > best.conf)) best = cand;
+      if (cand.value !== null && cand.conf >= 80) break;
+    }
+    return best;
+  };
+  const best = await readWith([0, 1, 2].map((level) => [r.ink, level]));
+  // 白抜き文字が「中身を取り出す読み方」でまったく読めなかったときだけ、縁の線をそのまま読む（端末による見え方の違い対策）
+  if (!best && r.ink === 'outline') return readWith([['dark', 2], ['dark', 1]]);
   return best;
 }
 
@@ -1144,8 +1150,9 @@ function classifyIcon(im, rect) {
     if (h >= 330 || h < 10) red++;
   }
   const n = d.length / 4;
-  if (orange / n >= 0.1) return 'megaphone';
-  if (red / n >= 0.1) return 'whistle';
+  // 「STAMP」チケットもオレンジが多い（赤はほぼ無い）ので、メガホンは赤も少し含むものに限る
+  if (orange / n >= 0.1 && red / n >= 0.05) return 'megaphone';
+  if (red / n >= 0.1 && orange / n < 0.08) return 'whistle';
   return null;
 }
 
@@ -1184,6 +1191,7 @@ async function readByLayout(img) {
     if (!firstBest) continue;
     const found = {};
     for (const r of layout.regions) {
+      if (r.needs && !found[r.needs]) continue; // アイコンが見分けられなかったマスの数字は読まない
       const best = r === layout.regions[0] ? firstBest : await readBest(layout, r);
       if (!best) continue;
       const { hit, rect } = best;
@@ -1306,6 +1314,7 @@ async function readLocally() {
   try {
     const results = [];
     const autoFilled = new Set();
+    const notes = new Set(); // 読めなかった理由など、利用者に伝えること
     for (current = 0; current < images.length; current++) {
       const img = images[current];
 
@@ -1318,9 +1327,15 @@ async function readLocally() {
           applyMode();
           toast(`${known.layout.name}なので「今のイベント」に切り替えました`);
         }
+        if (known.layout.name === 'アイテム倉庫' && !known.nums.some((n) => n.key === 'whistle')) {
+          notes.add('ホイッスルが見つかりませんでした（消費アイテムの1行目に写っているか確認してください。数は「入力」タブで直接入れられます）');
+        }
         known.nums.forEach((n) => {
           // 現在pt・PASS・ホイッスル・メガホンは「今のイベント」のときだけ使う
-          if (PROGRESS_FIELDS.includes(n.key) && mode !== 'now') return;
+          if (PROGRESS_FIELDS.includes(n.key) && mode !== 'now') {
+            notes.add('「開始から（次イベ）」で計算するときは、現在pt・PASS・ホイッスル・メガホンは使わないので入れていません');
+            return;
+          }
           if (assign(n.key, n.value)) {
             n.assigned = n.key;
             autoFilled.add(n.key);
@@ -1341,10 +1356,11 @@ async function readLocally() {
     onChange();
     const count = results.reduce((s, r) => s + r.nums.length, 0);
     const auto = [...autoFilled].map((k) => `${LABELS[k]} ${Number($(k).value).toLocaleString('ja-JP')}`).join('・');
+    const noteText = [...notes].map((t) => `\n⚠ ${t}`).join('');
     setStatus(count
-      ? `${auto ? `自動で入れました：${auto}\n` : ''}画像の上の数字をタップすると、どの項目か選んで入力できます。`
-      : '数字が見つかりませんでした。イベントページかアイテム倉庫のスクショを、画面全体が写った状態で入れてください。',
-    count ? 'ok' : 'warn');
+      ? `${auto ? `自動で入れました：${auto}\n` : ''}画像の上の数字をタップすると、どの項目か選んで入力できます。${noteText}`
+      : `数字が見つかりませんでした。イベントページかアイテム倉庫のスクショを、画面全体が写った状態で入れてください。${noteText}`,
+    count && !notes.size ? 'ok' : 'warn');
   } catch (err) {
     console.error(err);
     setStatus(`読み取りに失敗しました：${err?.message || err}`, 'warn');
