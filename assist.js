@@ -790,18 +790,31 @@ function scanKeys() {
 // ---- 画像 ----
 const MAX_EDGE = 1600;
 
+// 画像ファイルを描ける形で読み込む（古い iPhone など createImageBitmap が無い・失敗する端末は <img> で読む）
+async function decodeImage(file, objectUrl) {
+  if (window.createImageBitmap) {
+    try {
+      const bmp = await createImageBitmap(file);
+      return { source: bmp, width: bmp.width, height: bmp.height, close: () => bmp.close?.() };
+    } catch (_) { /* 下の方法で読む */ }
+  }
+  const im = await loadImage(objectUrl);
+  return { source: im, width: im.naturalWidth, height: im.naturalHeight, close: () => {} };
+}
+
 async function toJpeg(file) {
-  const bitmap = await createImageBitmap(file);
-  const scale = Math.min(1, MAX_EDGE / Math.max(bitmap.width, bitmap.height));
+  const original = URL.createObjectURL(file); // 決まった位置の数字は、縮小前の元画像から読む
+  const pic = await decodeImage(file, original);
+  const scale = Math.min(1, MAX_EDGE / Math.max(pic.width, pic.height));
   const canvas = document.createElement('canvas');
-  canvas.width = Math.round(bitmap.width * scale);
-  canvas.height = Math.round(bitmap.height * scale);
-  canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-  bitmap.close?.();
+  canvas.width = Math.round(pic.width * scale);
+  canvas.height = Math.round(pic.height * scale);
+  canvas.getContext('2d').drawImage(pic.source, 0, 0, canvas.width, canvas.height);
+  pic.close();
   const url = canvas.toDataURL('image/jpeg', 0.9);
   return {
     name: file.name, mediaType: 'image/jpeg', data: url.split(',')[1], url, width: canvas.width, height: canvas.height,
-    original: URL.createObjectURL(file), // 決まった位置の数字は、縮小前の元画像から読む
+    original,
   };
 }
 
