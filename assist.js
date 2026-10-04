@@ -913,11 +913,14 @@ const SCREEN_LAYOUTS = [
       // 上のバー「BP 4/10」「WORK 7/12」（紺地に白文字）
       { id: 'now_bp', ax: 'right', ay: 'top', x0: 1150, x1: 1265, y0: 44, y1: 86, ink: 'light', kind: 'fraction' },
       { id: 'now_ticket', ax: 'right', ay: 'top', x0: 1470, x1: 1575, y0: 44, y1: 86, ink: 'light', kind: 'fraction' },
-      // 「消費アイテム」一覧の先頭3マス：アイコンの色でメガホン／ホイッスルを見分け、下の「×32」を読む
+      // 「消費アイテム」一覧の先頭3マス：アイコンの色で種類を見分け、下の個数を読む
       ...[[318, 448], [465, 595], [612, 742]].flatMap(([x0, x1], i) => [
         { id: `cell${i}_icon`, ax: 'center', ay: 'middle', x0: x0 + 5, x1: x1 - 5, y0: 268, y1: 345, kind: 'icon' },
         { id: `cell${i}_count`, ax: 'center', ay: 'middle', x0, x1, y0: 343, y1: 392, ink: 'outline', kind: 'number' },
       ]),
+      // 選択中アイテムの詳細。「メガホン」と所持数が一覧より大きく表示される
+      { id: 'selected_item_name', ax: 'center', ay: 'middle', x0: 1380, x1: 1510, y0: 380, y1: 420, kind: 'label' },
+      { id: 'selected_item_count', ax: 'center', ay: 'middle', x0: 1410, x1: 1470, y0: 480, y1: 540, ink: 'dark', kind: 'number' },
     ],
     resolve: (v) => {
       const out = [v.now_bp, v.now_ticket].filter(Boolean);
@@ -926,6 +929,12 @@ const SCREEN_LAYOUTS = [
       for (const key of ['megaphone', 'whistle']) {
         const i = [0, 1, 2].find((n) => v[`cell${n}_icon`]?.value === key && v[`cell${n}_count`]);
         if (i !== undefined) out.push({ ...v[`cell${i}_count`], key });
+      }
+      if (v.selected_item_name?.text?.includes('メガホン') && v.selected_item_count) {
+        const i = out.findIndex((n) => n.key === 'megaphone');
+        const detail = { ...v.selected_item_count, key: 'megaphone' };
+        if (i < 0) out.push(detail);
+        else out[i] = detail;
       }
       if (out.some((n) => n.key === 'whistle') && !out.some((n) => n.key === 'megaphone')) {
         out.push({ key: 'megaphone', value: 0, text: '0', bbox: null });
@@ -1095,6 +1104,14 @@ function parseRegionText(r, text) {
 
 async function readRegion(im, rect, r) {
   if (r.kind === 'icon') return { value: classifyIcon(im, rect), text: '', conf: 100 };
+  if (r.kind === 'label') {
+    const c = document.createElement('canvas');
+    c.width = Math.max(1, Math.round(rect.w * 3));
+    c.height = Math.max(1, Math.round(rect.h * 3));
+    c.getContext('2d').drawImage(im, rect.x, rect.y, rect.w, rect.h, 0, 0, c.width, c.height);
+    const { data } = await (await getWorker()).recognize(c);
+    return { value: null, text: data.text.replace(/\s/g, ''), conf: data.confidence };
+  }
   const worker = await getDigitWorker();
   let best = null;
   for (let level = 0; level < 3; level++) {
@@ -1152,7 +1169,7 @@ async function readByLayout(img) {
   const H = im.naturalHeight;
   if (W < H * 1.2) return null; // ゲーム画面は横長
   const f = img.width / W; // 表示用の縮小画像の座標に直す
-  const ok = (r, hit) => hit && hit.value !== null && hit.value !== undefined && (r.kind === 'icon' || hit.conf >= 40);
+  const ok = (r, hit) => hit && (r.kind === 'label' ? hit.text.includes('メガホン') : hit.value !== null && hit.value !== undefined && (r.kind === 'icon' || hit.conf >= 40));
   // 端の余白の候補ごとに読み、欠けずに読めたもの（文字が長く、自信度が高いもの）を選ぶ
   const readBest = async (layout, r) => {
     let best = null;
